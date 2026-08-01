@@ -1,0 +1,1461 @@
+/* =========================================================================
+   game/game.js - state machine, timers, input, and frame orchestration.
+
+   States
+     title     the room drifts behind the title card
+     intro     fade up from black as the player lifts their head off the desk
+     exam      the loop: read, answer, submit, repeat
+     lose      pitch black, YOU LOSE, RETRY / QUIT
+     exiting   the session is over
+
+   Within `exam` the player holds at most one object at a time:
+     none      looking at the table
+     paper     the exam sheet, filling the view
+     calc      the calculator in the hand
+     calcFull  the calculator expanded to the full-screen grapher
+
+   Left click picks up; ESC sets down. From the expanded grapher, ESC steps
+   back to the handheld before setting it down.
+   ========================================================================= */
+(function (global) {
+'use strict';
+
+const SATG = global.SATG;
+const { clamp, lerp, smoothstep } = SATG.util;
+const QB = SATG.questionBank;
+
+const SAVE_KEY = 'satgame.save.v1';
+
+const HOLD = { NONE: 'none', PAPER: 'paper', CALC: 'calc', CALC_FULL: 'calcFull' };
+
+class Game {
+  constructor(pipeline, textures) {
+    this.pipeline = pipeline;
+    this.gl = pipeline.gl;
+    this.textures = textures;
+
+    this.scene = new SATG.Scene(this.gl, textures);
+    this.paper = new SATG.Paper(this.gl);
+    this.calculator = new SATG.Calculator(this.gl);
+
+    this.title = new SATG.screens.TitleScreen(this.gl);
+    /* Still built, but no longer a destination: every ending now goes to the
+       score report, which carries the YOU LOSE headline itself. This instance
+       is the scratch surface renderExitScreen draws on. */
+    this.lose = new SATG.screens.LoseScreen(this.gl);
+    this.results = new SATG.screens.ResultsScreen(this.gl);
+    this.settings = new SATG.screens.SettingsScreen(this.gl);
+    this.stats = new SATG.screens.StatsScreen(this.gl);
+    /* Deliberately NOT a state. The in-game menu is an overlay over a running
+       exam - see escmenu.js - and making it a state would route update()
+       around updateExam, which is the definition of pausing. */
+    this.escMenu = new SATG.screens.EscMenu(this.gl);
+    this.hud = new SATG.screens.Hud(this.gl);
+    this.feedback = new SATG.screens.FeedbackScreen(this.gl);
+    this.fader = new SATG.screens.Fader();
+
+    this.bank = new QB.QuestionBank(SATG.util.rng);
+
+    /* The sheet lying on the table shows the live question, not a placeholder.
+       It is unreadable at 270p, which is the point - the player can see there
+       is writing on it and has to pick it up to find out what it says. */
+    this.scene.paperTexture = this.paper.texture;
+
+    this.state = 'title';
+    this.hold = HOLD.NONE;
+    this.introT = 1;              // 1 = fully upright
+    this.question = null;
+    this.timeLeft = 0;
+    this.timeLimit = 1;
+    this.cleared = 0;
+    this.best = 0;
+    this.paused = false;
+    this.transitioning = false;
+
+    /* Set for a module or full-SAT run; null in Infinity, which still draws
+       one question at a time from the bank. Everything that behaves
+       differently between the two branches on this being present. */
+    this.form = null;
+    this.mode = null;
+    this.result = null;           // grade() output, once a form is finished
+    this.runElapsed = 0;          // seconds of testing time actually spent
+
+    this.mouse = { u: 0.5, v: 0.5, down: false, dragging: false, lastX: 0, lastY: 0 };
+
+    /* Held-sheet view. The paper is legible at 1.0, but a 150-word passage
+       falls back to smaller type, so the player can always magnify. */
+    this.paperZoom = 1;
+    this.paperPan = { x: 0, y: 0 };
+    this._paperDownAt = null;
+    this._paperMoved = 0;
+    this.hoverTarget = null;
+    this.lookYaw = 0;
+    this.lookPitch = 0;
+
+    this.fader.snap(0);
+    this.fader.to(1, 1.2);
+
+    this.loadSave();
+    this.title.setCanContinue(this.save && this.save.cleared > 0);
+  }
+
+  /* ==================================================================== */
+  /* Save                                                                  */
+  /* ==================================================================== */
+
+  loadSave() {
+    this.save = null;
+    try {
+      const raw = global.localStorage && global.localStorage.getItem(SAVE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.cleared === 'number') this.save = parsed;
+      }
+    } catch (e) { /* private mode, quota, corrupt entry - all non-fatal */ }
+    if (this.save) this.best = this.save.best || this.save.cleared || 0;
+  }
+
+  writeSave(data) {
+    try {
+      if (global.localStorage) global.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    } catch (e) { /* ignore */ }
+  }
+
+  clearSave() {
+    try { if (global.localStorage) global.localStorage.removeItem(SAVE_KEY); } catch (e) {}
+    this.save = null;
+    this.title.setCanContinue(false);
+  }
+
+  /* ==================================================================== */
+  /* Transitions                                                           */
+  /* ==================================================================== */
+
+  /* `mode` is {kind, section} straight off the menu tree. It is stored before
+     the fade so that a RETRY, which re-enters through here without going back
+     to the menu, replays the same mode rather than silently reverting to the
+     default one. */
+  startRun(resume, mode) {
+    if (this.transitioning) return;
+    this.transitioning = true;
+    this.escMenu.hide();
+    if (mode) this.mode = mode;
+    if (!this.mode) {
+      this.mode = { kind: SATG.menu.KIND.INFINITY, section: SATG.menu.SECTION.BOTH };
+    }
+    SATG.audio.init();
+    SATG.audio.resume();
+
+    this.fader.to(0, 0.9, () => {
+      this.bank.reset(this.mode.section);
+      this.cleared = resume && this.save ? this.save.cleared : 0;
+      if (resume && this.save) {
+        this.bank.correctStreak = this.save.streak || 0;
+        this.bank.served = this.save.cleared || 0;
+      }
+      this.best = Math.max(this.best, this.cleared);
+
+      this.state = 'intro';
+      this.introT = 0;
+      this.hold = HOLD.NONE;
+      this.scene.showPaper = true;
+      this.scene.showCalc = true;
+      this.lookYaw = this.lookPitch = 0;
+      this.result = null;
+      this.runElapsed = 0;
+
+      SATG.audio.startAmbience();
+
+      if (this.isInfinity) {
+        this.form = null;
+        this.paper.setNav(null);
+        this.nextQuestion(true);
+      } else {
+        this.buildForm();
+      }
+
+      // Fade up slowly while the head comes off the desk.
+      this.fader.to(1, 2.6, () => { this.transitioning = false; });
+      SATG.audio.latch();
+    });
+  }
+
+  get isInfinity() {
+    return !this.mode || this.mode.kind === SATG.menu.KIND.INFINITY;
+  }
+
+  /* ==================================================================== */
+  /* Module and full-SAT forms                                             */
+  /* ==================================================================== */
+
+  buildForm() {
+    const S = SATG.menu.SECTION;
+    const sections = this.mode.section === S.BOTH ? ['rw', 'math'] : [this.mode.section];
+    this.form = new SATG.exam.ExamForm(sections, SATG.util.rng);
+    this.loadFormQuestion(true);
+  }
+
+  /* Point the sheet at whatever question the form is currently on, and put
+     back any answer already given for it. */
+  loadFormQuestion(silent) {
+    const mod = this.form.module;
+    if (!mod) return;
+    this.question = mod.question;
+    this.timeLimit = mod.seconds;
+    this.timeLeft = mod.timeLeft;
+    this.paper.setQuestion(this.question);
+    this.paper.restore(mod.responseAt(mod.index));
+    this.paper.setNav(this.navState());
+    this.paper.render();
+    this.panicStarted = false;
+    if (!silent) SATG.audio.click(1400);
+  }
+
+  navState() {
+    const f = this.form;
+    if (!f) return null;
+    const mod = f.module;
+    return {
+      modules: f.modules.map((m, i) => ({
+        number: m.number, section: m.section,
+        done: i < f.index, current: i === f.index
+      })),
+      qIndex: mod.index, qCount: mod.count, answered: mod.answeredCount
+    };
+  }
+
+  /* Save whatever is on the sheet before leaving the question, then move.
+     Navigating away must never silently discard an answer. */
+  goQuestion(delta) {
+    if (!this.form || this.state !== 'exam') return false;
+    const mod = this.form.module;
+    if (this.paper.hasResponse()) mod.record(this.paper.currentResponse());
+    if (!mod.step(delta)) return false;
+    this.loadFormQuestion(false);
+    /* AFTER the reload, not before: setQuestion() clears the effects for the
+       outgoing question, which would take this one with it. One frame later
+       than ideal, which is 16ms and not perceptible. */
+    this.paper.fx.press(delta < 0 ? 'prev' : 'next');
+    this.paper.dirty = true;
+    return true;
+  }
+
+  gotoQuestion(i) {
+    if (!this.form || this.state !== 'exam') return false;
+    const mod = this.form.module;
+    if (this.paper.hasResponse()) mod.record(this.paper.currentResponse());
+    if (!mod.go(i)) return false;
+    this.loadFormQuestion(false);
+    return true;
+  }
+
+  /* End the module the player is sitting in: either the clock ran out or they
+     answered the last question. Nothing has been graded up to this point. */
+  finishModule(reason) {
+    if (!this.form || this.form.module.finished) return;
+    this.escMenu.hide();
+    const mod = this.form.module;
+    if (this.paper.hasResponse()) mod.record(this.paper.currentResponse());
+    mod.timeLeft = Math.max(0, this.timeLeft);
+    /* Seal it HERE, not in advance(). The guard at the top of this method
+       tests exactly this flag, and advance() does not run until the player
+       leaves the break card - so until now the guard was reading a flag that
+       nothing had set yet and could not have stopped a second entry. Not
+       reachable today, because the only two callers both leave the 'exam'
+       state on their way in, but a guard that cannot guard is worse than no
+       guard: it reads as though the case is handled. */
+    mod.finished = true;
+
+    SATG.audio.stopTension(true);
+
+    if (this.form.isLast) {
+      /* The last module of the form ends the way every run in this game ends,
+         because the brief asks for it: the shot, then the black. The score
+         report is what is waiting on the other side of it. */
+      SATG.audio.gunshot();
+      SATG.audio.stopAmbience();
+      this.showResults(reason);
+      return;
+    }
+
+    this.breakInfo = {
+      wasBreak: this.form.breakNext,
+      from: mod,
+      to: this.form.modules[this.form.index + 1]
+    };
+    SATG.audio.beep(440, 0.3);
+    this.hold = HOLD.NONE;
+    this.state = 'moduleBreak';
+    this.results.resetBreak(this.breakInfo, this.form);
+  }
+
+  beginNextModule() {
+    if (!this.form) return;
+    this.form.advance(this.bank);
+    this.state = 'exam';
+    this.hold = HOLD.NONE;
+    this.loadFormQuestion(true);
+  }
+
+  showResults(reason) {
+    this.form.elapsed = this.runElapsed;
+    this.result = this.form.grade(this.bank);
+    this.result.reason = reason || 'timeout';
+    this.result.mode = this.mode;
+    this.result.modeLabel = SATG.menu.modeLabel(this.mode);
+    this.state = 'results';
+    this.hold = HOLD.NONE;
+    this.transitioning = false;
+    this.fader.snap(0);
+    this.fader.to(1, 0.55);
+    this.results.reset(this.result);
+    SATG.profile.record(this.result);
+    this.clearSave();
+  }
+
+  nextQuestion(silent) {
+    this.question = this.bank.next();
+    this.timeLimit = this.question.timeLimit;
+    this.timeLeft = this.timeLimit;
+    this.paper.setQuestion(this.question);
+    // Draw once here so the sheet on the table carries the new question even
+    // though updateExam only refreshes it while it is being held.
+    this.paper.render();
+    this.panicStarted = false;
+    SATG.audio.stopTension(true);
+    if (!silent) SATG.audio.ding();
+  }
+
+  submit() {
+    if (this.state !== 'exam' || !this.question) return;
+
+    /* An answer cannot be given without the sheet in hand. This also keeps
+       flagInvalid() from being raised while the paper is on the table, where
+       nothing re-renders it - the flash would be swallowed silently now and
+       then reappear, out of context, the next time the sheet was picked up. */
+    if (this.hold !== HOLD.PAPER) return;
+
+    if (!this.paper.hasResponse()) { this.paper.flagInvalid(); return; }
+
+    /* On a module test ENTER records and moves on. It deliberately does NOT
+       grade: the player is entitled to change any answer until the module's
+       clock stops, and reacting to a wrong answer here - with a ding, a shot,
+       or anything else - would both leak the key and make going back
+       pointless. The whole module is graded at once, afterwards. */
+    if (this.form) {
+      const mod = this.form.module;
+      mod.record(this.paper.currentResponse());
+      if (mod.index >= mod.count - 1) {
+        // Last question answered: end the module rather than sitting on it.
+        this.finishModule('completed');
+      } else {
+        this.goQuestion(1);
+      }
+      return;
+    }
+
+    const response = this.paper.currentResponse();
+    const correct = this.bank.check(this.question, response);
+    this.bank.recordResult(correct, this.question);
+
+    if (correct) {
+      this.cleared++;
+      this.best = Math.max(this.best, this.cleared);
+      this.writeSave({ cleared: this.cleared, streak: this.bank.correctStreak, best: this.best });
+      this.title.setCanContinue(true);
+      SATG.audio.ding();
+      this.nextQuestion(true);
+      // Answering returns the sheet to the table - the next question is a
+      // new sheet, and the player has to pick it up again.
+      this.setHold(HOLD.NONE, true);
+    } else {
+      this.die('wrong');
+    }
+  }
+
+  die(reason) {
+    if (this.state === 'results') return;
+    this.hold = HOLD.NONE;
+    // The clock does not stop for the menu, so the menu can still be up when
+    // it reaches zero. Every exit from the exam has to take it down with it.
+    this.escMenu.hide();
+
+    SATG.audio.stopTension(true);
+    SATG.audio.gunshot();
+    SATG.audio.stopAmbience();
+
+    /* Hard cut to black - no fade. The shot IS the transition, and it
+       outranks whatever else was in progress: snap() drops any pending
+       fade callback, so the flag guarding that fade has to be released
+       here too. Leaving it set would mean toTitle() - which both RETRY and
+       QUIT go through - returns early forever, stranding the player on the
+       lose screen with no way out. Not currently reachable, because the
+       opening transition finishes before the clock starts, but the cost of
+       depending on that is a soft-lock and the cost of not depending on it
+       is one line. */
+    this.transitioning = false;
+    this.fader.snap(0);
+    this.fader.to(1, 0.55);
+
+    /* An Infinity run has no scaled score - there is no fixed number of
+       questions to convert against - so it reports how long the player lasted
+       instead, over the same per-domain breakdown the module tests use. */
+    const b = this.bank.breakdown();
+    this.result = {
+      kind: 'infinity',
+      reason: reason,
+      mode: this.mode,
+      modeLabel: SATG.menu.modeLabel(this.mode),
+      cleared: this.cleared,
+      best: this.best,
+      elapsed: this.runElapsed,
+      answerText: this.question ? this.question.answerText : null,
+      perDomain: b.perDomain, perSkill: b.perSkill,
+      strengths: b.strengths, weaknesses: b.weaknesses,
+      sections: []
+    };
+    this.state = 'results';
+    this.results.reset(this.result);
+    SATG.profile.record(this.result);
+
+    // A run that ended cannot be continued.
+    this.clearSave();
+    this.writeSave({ cleared: 0, streak: 0, best: this.best });
+  }
+
+  toTitle() {
+    if (this.transitioning) return;
+    this.transitioning = true;
+    // The sign-in button is real DOM sitting on top of the canvas, so it has
+    // to be told to go away by every route out of the stats page, not just the
+    // one that goes through closeStats().
+    SATG.account.show(false);
+    this.escMenu.hide();
+    this.fader.to(0, 0.6, () => {
+      this.state = 'title';
+      this.hold = HOLD.NONE;
+      this.question = null;
+      // Leaving a run drops the form with it: keeping it would let a later
+      // RETRY resume a half-finished module the player already walked away from.
+      this.form = null;
+      this.result = null;
+      this.paper.setNav(null);
+      this.introT = 1;
+      SATG.audio.stopTension(true);
+      SATG.audio.stopAmbience();
+      this.title.setCanContinue(!!(this.save && this.save.cleared > 0));
+      this.fader.to(1, 0.8, () => { this.transitioning = false; });
+    });
+  }
+
+  doExit() {
+    if (this.transitioning) return;
+    this.transitioning = true;
+    SATG.audio.stopTension(true);
+    SATG.audio.stopAmbience();
+    this.fader.to(0, 1.0, () => {
+      this.state = 'exiting';
+      this.transitioning = false;
+      this.fader.to(1, 0.6);
+    });
+  }
+
+  /* ==================================================================== */
+  /* Holding                                                               */
+  /* ==================================================================== */
+
+  setHold(next, quiet) {
+    if (this.hold === next) return;
+
+    const wasHolding = this.hold !== HOLD.NONE;
+    this.hold = next;
+
+    // A fresh sheet is always presented un-zoomed.
+    if (next !== HOLD.PAPER) this.resetPaperView();
+
+    this.scene.showPaper = next !== HOLD.PAPER;
+    this.scene.showCalc = next !== HOLD.CALC && next !== HOLD.CALC_FULL;
+    this.calculator.setExpanded(next === HOLD.CALC_FULL);
+
+    if (!quiet) {
+      if (next === HOLD.PAPER) SATG.audio.paperRustle(false);
+      else if (next === HOLD.NONE && wasHolding) SATG.audio.paperRustle(true);
+      else if (next === HOLD.CALC) SATG.audio.calcKey();
+      else if (next === HOLD.CALC_FULL) SATG.audio.beep(660, 0.09);
+    }
+  }
+
+  /* ==================================================================== */
+  /* Input                                                                 */
+  /* ==================================================================== */
+
+  onPointerMove(u, v, dx, dy) {
+    const pu = this.mouse.u, pv = this.mouse.v;
+    this.mouse.u = u;
+    this.mouse.v = v;
+
+    if (this.state === 'exam' && this.hold === HOLD.PAPER) {
+      if (this.mouse.down) {
+        this._paperMoved += Math.abs(u - pu) + Math.abs(v - pv);
+        if (this.paperZoom > 1.01) {
+          this.paperPan.x += u - pu;
+          this.paperPan.y += v - pv;
+          this.clampPaperPan();
+        }
+      }
+      return;
+    }
+
+    if (this.state === 'exam' && this.hold === HOLD.CALC_FULL &&
+        this.mouse.down && this.mouse.dragging) {
+      /* Pan the graph. Scale by the fullscreen canvas so a drag moves the
+         plot by the same number of graph pixels the cursor travelled.
+
+         The denominator must be the canvas's CSS size, not pipeline.width:
+         dx/dy come from clientX/clientY, which are CSS pixels and never
+         scale with the display, whereas pipeline.width is now the device-
+         pixel backing store. Dividing one by the other made the drag run at
+         1/devicePixelRatio speed - half rate on a 200%-scaled screen. */
+      const c = this.calculator;
+      const cssW = this.pipeline.canvas.clientWidth || this.pipeline.width;
+      const cssH = this.pipeline.canvas.clientHeight || this.pipeline.height;
+      c.pan(dx * (c.fullCanvas.width / cssW),
+            dy * (c.fullCanvas.height / cssH));
+      return;
+    }
+
+    if (this.state === 'exam' && this.hold === HOLD.NONE) {
+      // A shallow look offset, so the room breathes with the cursor without
+      // ever letting the player turn away from the desk.
+      this.lookYaw = (0.5 - u) * 0.30;
+      this.lookPitch = (0.5 - v) * 0.22;
+    }
+  }
+
+  onPointerDown(u, v) {
+    SATG.audio.init();
+    SATG.audio.resume();
+    this.mouse.down = true;
+    this.mouse.dragging = false;
+
+    switch (this.state) {
+      case 'title': {
+        const i = this.title.hitTest(u, v);
+        if (i !== null && this.title.setIndex(i)) SATG.audio.click();
+        if (i !== null) this.activateTitle();
+        return;
+      }
+      case 'results':
+      case 'moduleBreak': {
+        const i = this.results.hitTest(u, v);
+        if (i !== null) { this.results.setIndex(i); SATG.audio.click(); this.activateResults(); }
+        return;
+      }
+      case 'stats': {
+        const h = this.stats.hitTest(u, v);
+        if (!h) return;
+        if (h.kind === 'back') { this.closeStats(); return; }
+        if (h.kind === 'tab' && this.stats.setTab(h.index)) SATG.audio.click();
+        return;
+      }
+      case 'settings': {
+        const i = this.settings.hitTest(u, v);
+        if (i === null) return;
+        /* Clicking a row you are not on selects it; clicking the row you are
+           already on operates it. A slider that jumped the moment you touched
+           its label would change a setting the player only meant to read. */
+        if (this.settings.setIndex(i)) { SATG.audio.click(); return; }
+        const c = this.settings.selected;
+        if (c && c.kind === 'range') { if (this.settings.adjust(1)) SATG.audio.click(1500); return; }
+        const r = this.settings.activate();
+        if (!r) return;
+        if (r.type === 'action' && r.action === 'back') this.closeSettings();
+        else if (r.type === 'reset') SATG.audio.beep(520, 0.1);
+        else SATG.audio.click();
+        return;
+      }
+      case 'feedback': {
+        const h = this.feedback.hitTest(u, v);
+        if (!h) return;
+        if (h.key === 'back') { this.closeFeedback(); return; }
+        if (h.key === 'send' && h.enabled) { SATG.audio.click(); this.feedback.send(this); }
+        return;
+      }
+      case 'exam':
+        // The overlay takes the click before the room does, or picking an
+        // item off the desk through the panel would be possible.
+        if (this.escMenu.open) {
+          const i = this.escMenu.hitTest(u, v);
+          if (i === null) return;
+          if (this.escMenu.setIndex(i)) SATG.audio.click();
+          this.activateEscMenu();
+          return;
+        }
+        this.examPointerDown(u, v);
+        return;
+      case 'exiting':
+        this.toTitle();
+        return;
+    }
+  }
+
+  onPointerUp(u, v) {
+    const wasDown = this.mouse.down;
+    this.mouse.down = false;
+    this.mouse.dragging = false;
+
+    // A release that began under the open menu must not also answer a question.
+    if (!wasDown || this.state !== 'exam' || this.hold !== HOLD.PAPER ||
+        this.escMenu.open) {
+      this._paperDownAt = null;
+      return;
+    }
+
+    const down = this._paperDownAt;
+    this._paperDownAt = null;
+    // Anything past a few pixels of travel was a scroll, not a click.
+    if (!down || this._paperMoved > 0.012) return;
+
+    const local = rectToLocal(this.paperRect(), u === undefined ? down.u : u,
+                                                v === undefined ? down.v : v);
+    if (!local) return;
+    const hit = this.paper.hitTest(local.u, local.v);
+    if (!hit) return;
+
+    if (hit.type === 'choice') {
+      // Clicking a choice selects it; clicking the selected one commits.
+      if (this.paper.selected === hit.index) this.submit();
+      else { this.paper.select(hit.index); SATG.audio.click(1400); }
+    } else if (hit.type === 'input') {
+      this.paper.inputFocused = true;
+      SATG.audio.click(1200);
+    } else if (hit.type === 'prev') {
+      this.goQuestion(-1);
+    } else if (hit.type === 'next') {
+      this.goQuestion(1);
+    } else if (hit.type === 'module') {
+      /* The strip is a position indicator, not a control. A module you have
+         left is sealed, and a module you have not reached does not exist yet -
+         its difficulty is chosen from how the current one goes. Saying so is
+         better than a click that appears to do nothing. */
+      if (this.form && hit.index !== this.form.index) {
+        SATG.audio.beep(300, 0.1);
+        this.paper.flagInvalid();
+      }
+    }
+  }
+
+  onWheel(delta) {
+    if (this.state !== 'exam') return;
+    if (this.hold === HOLD.CALC_FULL) {
+      this.calculator.zoom(delta > 0 ? 0.88 : 1.136, this.mouse.u, this.mouse.v);
+    } else if (this.hold === HOLD.PAPER) {
+      this.zoomPaper(delta, this.mouse.u, this.mouse.v);
+    }
+  }
+
+  examPointerDown(u, v) {
+    if (this.hold === HOLD.NONE) {
+      const ray = this.pipeline.camera.rayFromScreen(u, v);
+      const hit = this.scene.pick(ray);
+      if (hit === 'paper') this.setHold(HOLD.PAPER);
+      else if (hit === 'calculator') this.setHold(HOLD.CALC);
+      return;
+    }
+
+    if (this.hold === HOLD.PAPER) {
+      /* Defer the action to pointer-up. While zoomed the sheet is dragged to
+         scroll, and a drag that began on a choice must not also select it. */
+      this._paperDownAt = { u, v };
+      this._paperMoved = 0;
+      this.mouse.dragging = true;
+      return;
+    }
+
+    if (this.hold === HOLD.CALC) {
+      const local = rectToLocal(this.calcRect(), u, v);
+      if (!local) return;
+      const hit = this.calculator.hitTestHand(local.u, local.v);
+      if (hit && hit.type === 'key') {
+        SATG.audio.calcKey();
+        if (hit.label === 'GRAPH') this.setHold(HOLD.CALC_FULL);
+        else this.calculator.key(hit.label);
+      }
+      return;
+    }
+
+    if (this.hold === HOLD.CALC_FULL) {
+      const C = this.calculator;
+      const hit = C.hitTestFull(u, v);
+      if (!hit) return;
+
+      switch (hit.kind) {
+        case 'slot':
+          C.setSlot(hit.slot);
+          // Clicking the bar raises the keypad, as Desmos does.
+          C.padOpen = true;
+          SATG.audio.click(1500);
+          return;
+        case 'padToggle':
+          C.padOpen = !C.padOpen;
+          SATG.audio.beep(C.padOpen ? 720 : 520, 0.05);
+          return;
+        case 'padKey':
+        case 'padAction':
+          C.padPress(hit);
+          SATG.audio.calcKey();
+          return;
+        case 'zoomIn':  C.zoomStep(true);  SATG.audio.click(1600); return;
+        case 'zoomOut': C.zoomStep(false); SATG.audio.click(1300); return;
+        case 'home':    C.resetView();     SATG.audio.beep(600, 0.06); return;
+        case 'graph':
+          // A click within reach of a point of interest pins its label;
+          // otherwise the drag pans the view.
+          if (C.clickPOI(u, v)) SATG.audio.beep(880, 0.05);
+          else this.mouse.dragging = true;
+          return;
+      }
+    }
+  }
+
+  onKeyDown(e) {
+    const key = e.key;
+    SATG.audio.init();
+    SATG.audio.resume();
+
+    if (this.state === 'title') {
+      if (key === 'ArrowUp' || key === 'w' || key === 'W') { if (this.title.move(-1)) SATG.audio.click(); }
+      else if (key === 'ArrowDown' || key === 's' || key === 'S') { if (this.title.move(1)) SATG.audio.click(); }
+      else if (key === 'Enter' || key === ' ' ||
+               key === 'ArrowRight' || key === 'd' || key === 'D') this.activateTitle();
+      else if (key === 'Escape' || key === 'Backspace' ||
+               key === 'ArrowLeft' || key === 'a' || key === 'A') {
+        // Backspace is "go back" in a browser too; without this the menu key
+        // navigates the page away from the game.
+        if (key === 'Backspace') e.preventDefault();
+        this.titleBack();
+      }
+      return;
+    }
+
+    if (this.state === 'feedback') {
+      if (key === 'Escape') { this.closeFeedback(); return; }
+      if (key === 'Enter') {
+        // Shift+Enter breaks the line; plain Enter sends, matching the way
+        // Enter submits everywhere else in the game.
+        if (e.shiftKey) { this.feedback.newline(); SATG.audio.click(1700); }
+        else { this.feedback.send(this); SATG.audio.click(); }
+        return;
+      }
+      if (key === 'Backspace') { e.preventDefault(); this.feedback.backspace(); return; }
+      // Offered by name when a send fails, so there is always a way through.
+      if ((key === 'm' || key === 'M') && this.feedback.status === 'failed') {
+        this.feedback.mailFallback(this);
+        return;
+      }
+      if (key.length === 1) { if (this.feedback.typeChar(key)) SATG.audio.click(1700); }
+      return;
+    }
+
+    if (this.state === 'stats') {
+      if (key === 'Escape' || key === 'Backspace') {
+        if (key === 'Backspace') e.preventDefault();
+        this.closeStats(); return;
+      }
+      if (key === 'ArrowLeft'  || key === 'a' || key === 'A') {
+        if (this.stats.moveTab(-1)) SATG.audio.click(); return;
+      }
+      if (key === 'ArrowRight' || key === 'd' || key === 'D') {
+        if (this.stats.moveTab(1)) SATG.audio.click(); return;
+      }
+      if (key === 'ArrowUp'   || key === 'w' || key === 'W') { this.stats.scrollBy(-40); return; }
+      if (key === 'ArrowDown' || key === 's' || key === 'S') { this.stats.scrollBy(40); return; }
+      if (key === 'PageUp')   { this.stats.scrollBy(-this.stats.viewH); return; }
+      if (key === 'PageDown' || key === ' ') { this.stats.scrollBy(this.stats.viewH); return; }
+      if (key === 'Enter') { this.closeStats(); return; }
+      return;
+    }
+
+    if (this.state === 'settings') {
+      if (key === 'Escape') { this.closeSettings(); return; }
+      if (key === 'ArrowUp' || key === 'w' || key === 'W') { this.settings.move(-1); SATG.audio.click(); return; }
+      if (key === 'ArrowDown' || key === 's' || key === 'S') { this.settings.move(1); SATG.audio.click(); return; }
+      if (key === 'ArrowLeft' || key === 'a' || key === 'A') {
+        if (this.settings.adjust(-1)) SATG.audio.click(900);
+        return;
+      }
+      if (key === 'ArrowRight' || key === 'd' || key === 'D') {
+        if (this.settings.adjust(1)) SATG.audio.click(1500);
+        return;
+      }
+      if (key === 'Enter' || key === ' ') {
+        const r = this.settings.activate();
+        if (!r) return;
+        if (r.type === 'action' && r.action === 'back') this.closeSettings();
+        // A restore is silent otherwise, and silence reads as a dead key.
+        else if (r.type === 'reset') SATG.audio.beep(520, 0.1);
+        else SATG.audio.click();
+        return;
+      }
+      return;
+    }
+
+    if (this.state === 'results' || this.state === 'moduleBreak') {
+      if (key === 'ArrowUp' || key === 'w' || key === 'W') { this.results.move(-1); SATG.audio.click(); }
+      else if (key === 'ArrowDown' || key === 's' || key === 'S') { this.results.move(1); SATG.audio.click(); }
+      else if (key === 'Enter' || key === ' ') this.activateResults();
+      return;
+    }
+
+    if (this.state === 'exiting') {
+      if (key === 'Enter' || key === 'Escape' || key === ' ') this.toTitle();
+      return;
+    }
+
+    if (this.state !== 'exam') return;
+
+    /* ---- the in-game menu owns the keyboard while it is up. */
+    if (this.escMenu.open) {
+      if (key === 'Escape') {
+        if (this.escMenu.back() === 'close') this.closeEscMenu();
+        else SATG.audio.click();
+        return;
+      }
+      if (key === 'ArrowUp'   || key === 'w' || key === 'W') { if (this.escMenu.move(-1)) SATG.audio.click(); return; }
+      if (key === 'ArrowDown' || key === 's' || key === 'S') { if (this.escMenu.move(1)) SATG.audio.click(); return; }
+      if (key === 'ArrowLeft'  || key === 'a' || key === 'A') { if (this.escMenu.adjust(-1)) SATG.audio.click(900); return; }
+      if (key === 'ArrowRight' || key === 'd' || key === 'D') { if (this.escMenu.adjust(1)) SATG.audio.click(1500); return; }
+      if (key === 'Enter' || key === ' ') { this.activateEscMenu(); return; }
+      return;
+    }
+
+    /* ---- Escape: step out of whatever is held, and open the menu when the
+       hands are already empty. Setting something down is the more urgent
+       meaning of the key during an exam, so it keeps first claim. */
+    if (key === 'Escape') {
+      if (this.hold === HOLD.CALC_FULL) this.setHold(HOLD.CALC);
+      else if (this.hold !== HOLD.NONE) this.setHold(HOLD.NONE);
+      else this.openEscMenu();
+      return;
+    }
+
+    if (key === 'Enter') {
+      if (this.hold === HOLD.CALC_FULL) { this.calculator.submit(); return; }
+      if (this.hold === HOLD.CALC) { this.calculator.submit(); SATG.audio.calcKey(); return; }
+      // Enter with empty hands reaches for the sheet rather than doing nothing:
+      // the hold resets after every correct answer, so this is the common case.
+      if (this.hold !== HOLD.PAPER) { this.setHold(HOLD.PAPER); return; }
+      this.submit();
+      return;
+    }
+
+    if (key === 'Backspace') {
+      e.preventDefault();
+      if (this.hold === HOLD.PAPER) this.paper.backspace();
+      else if (this.hold === HOLD.CALC || this.hold === HOLD.CALC_FULL) this.calculator.backspace();
+      return;
+    }
+
+    /* ---- holding the paper */
+    if (this.hold === HOLD.PAPER) {
+      /* Paging within the module. Checked before the answer keys because
+         left/right are free in both question formats, whereas up/down are
+         already how a multiple-choice answer is chosen. */
+      if (this.form) {
+        if (key === 'ArrowLeft')  { this.goQuestion(-1); return; }
+        if (key === 'ArrowRight') { this.goQuestion(1);  return; }
+      }
+      const q = this.question;
+      if (q && q.format === 'mc') {
+        const idx = 'abcd'.indexOf(key.toLowerCase());
+        if (idx >= 0 && idx < q.choices.length) { this.paper.select(idx); SATG.audio.click(1400); return; }
+        if (key === 'ArrowDown') { this.paper.select(clamp(this.paper.selected + 1, 0, q.choices.length - 1)); SATG.audio.click(); return; }
+        if (key === 'ArrowUp')   { this.paper.select(clamp(this.paper.selected - 1, 0, q.choices.length - 1)); SATG.audio.click(); return; }
+      } else if (q && key.length === 1) {
+        if (this.paper.typeChar(key)) SATG.audio.click(1700);
+        return;
+      }
+      return;
+    }
+
+    /* ---- holding the calculator, in either view */
+    if (this.hold === HOLD.CALC || this.hold === HOLD.CALC_FULL) {
+      // Home, not "r" - see the Tab note above; every letter is a variable.
+      if (this.hold === HOLD.CALC_FULL && key === 'Home') {
+        this.calculator.resetView();
+        return;
+      }
+      /* Tab toggles the grapher, NOT "g". Every letter is a legal variable in
+         an expression, so a letter shortcut can only ever fight with typing -
+         pressing g to graph used to just insert the character instead. */
+      if (key === 'Tab') {
+        this.setHold(this.hold === HOLD.CALC ? HOLD.CALC_FULL : HOLD.CALC);
+        return;
+      }
+      if (key.length === 1 && /[0-9a-zA-Z+\-*/^().]/.test(key)) {
+        this.calculator.typeChar(key);
+        SATG.audio.calcKey();
+        return;
+      }
+      return;
+    }
+
+    /* ---- hands empty: keyboard shortcuts to pick things up */
+    if (key === 'e' || key === 'E' || key === ' ') {
+      const ray = this.pipeline.camera.rayFromScreen(this.mouse.u, this.mouse.v);
+      const hit = this.scene.pick(ray);
+      if (hit === 'paper') this.setHold(HOLD.PAPER);
+      else if (hit === 'calculator') this.setHold(HOLD.CALC);
+    } else if (key === 'q' || key === 'Q') {
+      this.setHold(HOLD.PAPER);
+    } else if (key === 'c' || key === 'C') {
+      this.setHold(HOLD.CALC);
+    }
+  }
+
+  /* The menu is a tree, so activating an entry can mean three different
+     things. The tree itself reports which one without knowing anything about
+     game state; this is the only place that turns that report into an action. */
+  activateTitle() {
+    const r = this.title.enter();
+    switch (r.type) {
+      case 'submenu':
+      case 'back':
+        SATG.audio.click();
+        return;
+      case 'mode':
+        this.clearSave();
+        this.startRun(false, r.mode);
+        return;
+      case 'action':
+        this.runMenuAction(r.action);
+        return;
+    }
+  }
+
+  runMenuAction(action) {
+    switch (action) {
+      case 'feedback': this.openFeedback(); return;
+      case 'settings': this.openSettings(); return;
+      case 'stats':    this.openStats(); return;
+      case 'exit':     this.doExit(); return;
+    }
+  }
+
+  openStats() {
+    SATG.audio.click();
+    // Loading is deferred to here rather than done at boot: the sign-in script
+    // is a third-party request, and a player who never opens this page should
+    // never make it.
+    SATG.account.load();
+    SATG.account.onChange = () => { this.stats.refresh(); };
+    this.stats.reset();
+    this.state = 'stats';
+    const spot = this.stats.buttonSpot();
+    SATG.account.place(spot.u, spot.v);
+    SATG.account.show(true);
+  }
+
+  closeStats() {
+    this.stats.pressBack();
+    SATG.audio.click();
+    SATG.account.show(false);
+    this.state = 'title';
+    this.title.dirty = true;
+  }
+
+  /* Like the feedback page: a menu page, not a scene change, so no fade. */
+  openSettings() {
+    SATG.audio.click();
+    this.settings.reset();
+    this.state = 'settings';
+  }
+
+  closeSettings() {
+    SATG.audio.click();
+    SATG.settings.save();
+    this.state = 'title';
+    this.title.dirty = true;
+  }
+
+  /* ESC steps back up one level of the menu, matching the way it steps out of
+     whatever is held during the exam. At the root it does nothing, rather than
+     quitting: EXIT is an entry the player has to choose. */
+  titleBack() {
+    if (this.title.back()) SATG.audio.click();
+  }
+
+  /* The feedback screen is a plain state swap with no fade. It is a menu
+     page, not a scene change, and making the player sit through a transition
+     to reach a text box would be friction for nothing. */
+  openFeedback() {
+    SATG.audio.click();
+    this.feedback.reset();
+    this.state = 'feedback';
+  }
+
+  closeFeedback() {
+    SATG.audio.click();
+    this.state = 'title';
+    this.title.dirty = true;
+  }
+
+  openEscMenu() {
+    if (this.state !== 'exam' || this.escMenu.open) return;
+    SATG.audio.beep(520, 0.06);
+    this.escMenu.show();
+  }
+
+  closeEscMenu() {
+    if (!this.escMenu.open) return;
+    SATG.audio.beep(380, 0.05);
+    this.escMenu.hide();
+  }
+
+  activateEscMenu() {
+    const r = this.escMenu.activate();
+    if (!r) { SATG.audio.click(); return; }
+    switch (r.do) {
+      case 'page':    SATG.audio.click(); return;
+      case 'reset':   SATG.audio.beep(520, 0.1); return;
+      case 'resume':  this.closeEscMenu(); return;
+      case 'restart':
+        this.escMenu.hide();
+        /* Same mode, from the top. startRun() rebuilds the form, so a module
+           run gets a fresh set of questions rather than the ones already seen. */
+        this.startRun(false);
+        return;
+      case 'quit':
+        this.escMenu.hide();
+        this.toTitle();
+        return;
+    }
+  }
+
+  activateResults() {
+    this.results.press();
+    switch (this.results.selected) {
+      case 'continue': SATG.audio.click(); this.beginNextModule(); return;
+      case 'retry':    this.startRun(false); return;
+      case 'quit':
+      case 'menu':     this.toTitle(); return;
+    }
+  }
+
+  /* ==================================================================== */
+  /* Update                                                                */
+  /* ==================================================================== */
+
+  update(dt) {
+    this.fader.update(dt);
+    this.pipeline.time += dt;
+
+    const panic = this.state === 'exam' && this.question
+      ? clamp(1 - this.timeLeft / QB.PANIC_SECONDS, 0, 1)
+      : 0;
+
+    this.scene.update(dt, panic);
+
+    switch (this.state) {
+      case 'title':
+        this.title.update(dt);
+        // A slow drift so the room behind the card is never a still image.
+        this.scene.applyCamera(this.pipeline.camera, 1,
+          Math.sin(this.pipeline.time * 0.09) * 0.16 - 0.22,
+          Math.sin(this.pipeline.time * 0.07) * 0.05 + 0.06);
+        break;
+
+      case 'intro':
+        this.introT = Math.min(1, this.introT + dt / 3.4);
+        this.scene.applyCamera(this.pipeline.camera, this.introT, 0, 0);
+        if (this.introT >= 1) this.state = 'exam';
+        break;
+
+      case 'exam':
+        /* Both, in this order and unconditionally. The exam updating while
+           the menu is up is the entire point: the clock keeps running, the
+           ten-second cue still starts, and a module still ends on time with
+           the panel open. */
+        this.updateExam(dt, panic);
+        this.escMenu.update(dt);
+        break;
+
+      case 'results':
+      case 'moduleBreak':
+        this.results.update(dt);
+        break;
+
+      case 'feedback':
+        this.feedback.update(dt);
+        // The room keeps drifting behind the panel, as on the title card.
+        this.scene.applyCamera(this.pipeline.camera, 1,
+          Math.sin(this.pipeline.time * 0.09) * 0.16 - 0.22,
+          Math.sin(this.pipeline.time * 0.07) * 0.05 + 0.06);
+        break;
+
+      case 'settings':
+        this.settings.update(dt);
+        this.scene.applyCamera(this.pipeline.camera, 1,
+          Math.sin(this.pipeline.time * 0.09) * 0.16 - 0.22,
+          Math.sin(this.pipeline.time * 0.07) * 0.05 + 0.06);
+        break;
+
+      case 'stats':
+        this.stats.update(dt);
+        break;
+    }
+
+    /* Grain and colour split rise with the pressure - unless the player has
+       asked them not to, in which case the panic term is dropped and the base
+       level is held. The scale factors come from the settings page and are
+       applied here, every frame, because these three are rewritten every
+       frame: setting them once when the slider moves would last exactly until
+       the next tick. */
+    const S = SATG.settings.values;
+    const p = S.calmPanic ? 0 : panic;
+    this.pipeline.brightness = S.brightness;
+    this.pipeline.grade.grain = (0.05 + p * 0.06) * S.grain;
+    this.pipeline.grade.vignette = (0.58 + p * 0.22) * S.vignette;
+    this.pipeline.grade.aberration = 0.14 + p * 0.35;
+    this.pipeline.fade = this.fader.value;
+  }
+
+  updateExam(dt, panic) {
+    this.scene.applyCamera(this.pipeline.camera, 1, this.lookYaw, this.lookPitch);
+
+    /* The sheet is only animated (caret blink, invalid flash) while it is in
+       the player's hands. Re-rendering it while it lies on the table would
+       re-upload an 800x1120 texture twice a second for detail nobody can read
+       at 270p, and that upload traffic competes with the grapher's. */
+    if (this.hold === HOLD.PAPER) {
+      this.paper.update(dt);
+      this.paper.render();
+    }
+
+    if (!this.question || this.transitioning) return;
+
+    this.timeLeft -= dt;
+    this.runElapsed += dt;
+    // The module owns the clock on a module test, so the module is where the
+    // remaining time has to be written back - otherwise paging between
+    // questions reloads the module's stale timeLeft and the clock jumps back.
+    if (this.form && this.form.module) this.form.module.timeLeft = this.timeLeft;
+
+    // The last ten seconds: the cue starts and swells until the shot.
+    if (this.timeLeft <= QB.PANIC_SECONDS) {
+      if (!this.panicStarted) { SATG.audio.startTension(); this.panicStarted = true; }
+      SATG.audio.setTensionIntensity(panic);
+    }
+
+    if (this.timeLeft <= 0) {
+      this.timeLeft = 0;
+      if (this.form) this.finishModule('timeout');
+      else this.die('timeout');
+      return;
+    }
+
+    // What the crosshair is currently over, for the prompt.
+    if (this.hold === HOLD.NONE) {
+      const ray = this.pipeline.camera.rayFromScreen(this.mouse.u, this.mouse.v);
+      this.hoverTarget = this.scene.pick(ray);
+    } else {
+      this.hoverTarget = null;
+    }
+  }
+
+  /* ==================================================================== */
+  /* Layout                                                                */
+  /* ==================================================================== */
+
+  /* Fit a canvas of the given aspect into `heightFraction` of the screen,
+     centred, converting to the 0..1 screen-space rect the overlay expects. */
+  fitRect(canvasAspect, heightFraction, offsetY) {
+    const screenAspect = this.pipeline.width / this.pipeline.height;
+    const h = heightFraction;
+    const w = (h * canvasAspect) / screenAspect;
+    return { x: (1 - w) / 2, y: (1 - h) / 2 + (offsetY || 0), w, h };
+  }
+
+  /* Un-panned sheet rect at the current zoom. */
+  paperRectRaw() { return this.fitRect(this.paper.aspect, 0.94 * this.paperZoom, 0); }
+
+  paperRect() {
+    const r = this.paperRectRaw();
+    r.x += this.paperPan.x;
+    r.y += this.paperPan.y;
+    return r;
+  }
+
+  calcRect() { return this.fitRect(this.calculator.handAspect, 0.86, 0); }
+
+  /* Keep the sheet from being dragged off screen: once an axis is larger
+     than the viewport it must still cover it; while it fits, it stays
+     centred and the pan on that axis is pinned to zero. */
+  clampPaperPan() {
+    const raw = this.paperRectRaw();
+    this.paperPan.x = raw.w <= 1 ? 0
+      : clamp(this.paperPan.x, 1 - raw.x - raw.w, -raw.x);
+    this.paperPan.y = raw.h <= 1 ? 0
+      : clamp(this.paperPan.y, 1 - raw.y - raw.h, -raw.y);
+  }
+
+  /* Zoom about the cursor, so the word under the pointer stays under it. */
+  zoomPaper(delta, u, v) {
+    const before = this.paperRect();
+    const lu = (u - before.x) / before.w;
+    const lv = (v - before.y) / before.h;
+
+    this.paperZoom = clamp(this.paperZoom * (delta > 0 ? 0.88 : 1.136), 1, 3.4);
+
+    const raw = this.paperRectRaw();
+    this.paperPan.x = u - raw.x - lu * raw.w;
+    this.paperPan.y = v - raw.y - lv * raw.h;
+    this.clampPaperPan();
+  }
+
+  resetPaperView() {
+    this.paperZoom = 1;
+    this.paperPan.x = this.paperPan.y = 0;
+  }
+
+  /* ==================================================================== */
+  /* Render                                                                */
+  /* ==================================================================== */
+
+  render() {
+    const P = this.pipeline;
+
+    if (this.state === 'results' || this.state === 'moduleBreak' ||
+        this.state === 'exiting') {
+      P.beginFlat(0, 0, 0);
+    } else {
+      this.scene.render(P);
+      P.endWorld();
+    }
+
+    P.beginOverlays();
+
+    switch (this.state) {
+      case 'title':
+        /* Must track the viewport. Every overlay is drawn as a stretch-to-fit
+           {0,0,1,1} quad with no aspect correction, so a canvas left at its
+           construction size is squashed by whatever the window's real aspect
+           ratio is - 108% distortion on a tall window. The HUD always got
+           this right because it resizes each frame; these two never did. */
+        this.title.resize(P.compRT.width, P.compRT.height, P.uiScale);
+        this.title.render();
+        P.drawOverlay(this.title.texture, { x: 0, y: 0, w: 1, h: 1 });
+        break;
+
+      case 'intro':
+      case 'exam':
+        this.renderExamOverlays(P);
+        if (this.escMenu.open) {
+          this.escMenu.resize(P.compRT.width, P.compRT.height, P.uiScale);
+          this.escMenu.render();
+          P.drawOverlay(this.escMenu.texture, { x: 0, y: 0, w: 1, h: 1 });
+          /* The reticle is drawn UNDER the panel by renderExamOverlays, so a
+             second one goes on top or the buttons cannot be aimed at.
+
+             drawReticleOver, not renderHudCursorOnly. The latter calls
+             hud.set() with an empty prompt, and renderHud() had just set the
+             real one - so the two would fight, marking the prompt band dirty
+             on every single frame the menu was open and re-uploading a
+             full-width strip at 60fps. That is the exact texture-traffic
+             pattern that tore the sheet into blocks before, and it would have
+             been invisible in every check that did not measure uploads. */
+          this.drawReticleOver(P);
+        }
+        break;
+
+      case 'results':
+      case 'moduleBreak':
+        // Same reason as the title card above. renderExitScreen already did
+        // this for the 'exiting' state, but dying is the common path and it
+        // was the one left out.
+        this.results.resize(P.compRT.width, P.compRT.height, P.uiScale);
+        this.results.render();
+        P.drawOverlay(this.results.texture, { x: 0, y: 0, w: 1, h: 1 });
+        this.renderHudCursorOnly(P);
+        break;
+
+      case 'feedback':
+        this.feedback.resize(P.compRT.width, P.compRT.height, P.uiScale);
+        this.feedback.render();
+        P.drawOverlay(this.feedback.texture, { x: 0, y: 0, w: 1, h: 1 });
+        // A pointer, or the buttons cannot be aimed at.
+        this.renderHudCursorOnly(P);
+        break;
+
+      case 'settings':
+        this.settings.resize(P.compRT.width, P.compRT.height, P.uiScale);
+        this.settings.render();
+        P.drawOverlay(this.settings.texture, { x: 0, y: 0, w: 1, h: 1 });
+        this.renderHudCursorOnly(P);
+        break;
+
+      case 'stats':
+        this.stats.resize(P.compRT.width, P.compRT.height, P.uiScale);
+        this.stats.render();
+        P.drawOverlay(this.stats.texture, { x: 0, y: 0, w: 1, h: 1 });
+        this.renderHudCursorOnly(P);
+        break;
+
+      case 'exiting':
+        this.renderExitScreen(P);
+        break;
+    }
+
+    P.present();
+  }
+
+  renderExamOverlays(P) {
+    if (this.hold === HOLD.CALC_FULL) {
+      this.calculator.resizeFull(P.compRT.width, P.compRT.height);
+      this.calculator.pointer.u = this.mouse.u;
+      this.calculator.pointer.v = this.mouse.v;
+      this.calculator.renderFullscreen(P.time);
+      P.drawOverlay(this.calculator.fullTexture, { x: 0, y: 0, w: 1, h: 1 });
+      // Trace readout and arrow pointer, as quads on top of the panel.
+      this.calculator.drawDynamic(P);
+      // The grapher draws its own arrow pointer, so the HUD adds none.
+      this.renderHud(P, 'none');
+      return;
+    }
+
+    if (this.hold === HOLD.PAPER) {
+      this.paper.render();
+      // A soft scrim so the room recedes while reading.
+      P.fillRect({ x: 0, y: 0, w: 1, h: 1 }, [0, 0, 0, 0.62]);
+      P.drawOverlay(this.paper.texture, this.paperRect());
+      this.renderHud(P, 'bright');
+      return;
+    }
+
+    if (this.hold === HOLD.CALC) {
+      this.calculator.renderHandheld();
+      P.fillRect({ x: 0, y: 0, w: 1, h: 1 }, [0, 0, 0, 0.52]);
+      P.drawOverlay(this.calculator.handTexture, this.calcRect());
+      this.renderHud(P, 'bright');
+      return;
+    }
+
+    this.renderHud(P, 'crosshair');
+  }
+
+  renderHud(P, cursorStyle) {
+    // The intro plays without a HUD; the clock starts when the player is up.
+    if (this.state === 'intro') return;
+
+    this.hud.resize(P.compRT.width, P.compRT.height, P.uiScale);
+
+    let prompt = '';
+    /* Nothing in the room can be reached while the panel is up, so promising
+       "CLICK - TAKE THE PAPER" would be a lie. Blanking it here also keeps the
+       band stable rather than changing as the cursor drifts over the desk
+       behind the menu. */
+    if (this.escMenu.open) {
+      prompt = '';
+    } else if (this.hold === HOLD.NONE) {
+      if (this.hoverTarget === 'paper') prompt = 'CLICK - TAKE THE PAPER';
+      else if (this.hoverTarget === 'calculator') prompt = 'CLICK - TAKE THE CALCULATOR';
+    } else if (this.hold === HOLD.PAPER) {
+      const zoomHint = this.paperZoom > 1.01
+        ? '(SCROLL) TO ZOOM  DRAG TO MOVE'
+        : '(SCROLL) TO ZOOM';
+      const answerHint = this.question && this.question.format === 'grid'
+        ? 'TYPE YOUR ANSWER' : 'CLICK TO SELECT';
+      /* On a module test ENTER advances rather than commits, and the arrows
+         page - the player has to be told, because nothing else on screen says
+         that going back is allowed, and going back is the whole point. */
+      prompt = this.form
+        ? answerHint + '    ' + zoomHint + '    ARROWS - MOVE    ENTER - NEXT    ESC - SET DOWN'
+        : answerHint + '    ' + zoomHint + '    ENTER - SUBMIT    ESC - SET DOWN';
+    } else if (this.hold === HOLD.CALC) {
+      prompt = 'CLICK KEYS    TAB - GRAPH    ESC - SET DOWN';
+    }
+
+    this.hud.set({
+      timeLeft: this.timeLeft,
+      timeLimit: this.timeLimit,
+      prompt,
+      // Nothing is graded during a module, so there is no "cleared" count to
+      // show - only how many of the module's questions have been filled in.
+      cleared: this.form ? this.form.module.answeredCount : this.cleared,
+      countLabel: this.form ? 'ANSWERED' : 'CLEARED',
+      cursor: cursorStyle,
+      usePointer: true,
+      pointer: { u: this.mouse.u, v: this.mouse.v }
+    });
+    // draw() composites the HUD's three layers itself: the rarely-changing
+    // base, the small clock strip, and the reticle sprite.
+    this.hud.draw(P);
+  }
+
+  /* Just the pointer sprite, changing no HUD state at all. Used when the HUD
+     has already been set up this frame and only needs a cursor drawn over the
+     top of something else. */
+  drawReticleOver(P) {
+    const tex = this.hud.reticle.get('bright');
+    if (!tex) return;
+    const s = this.hud.s;
+    const w = 32 * s / this.hud.W, h = 32 * s / this.hud.H;
+    P.drawOverlay(tex, {
+      x: this.mouse.u - w / 2, y: this.mouse.v - h / 2, w: w, h: h
+    });
+  }
+
+  /* The feedback screen has buttons but no clock, prompt or counter, so it
+     borrows only the HUD's pointer rather than the whole overlay. */
+  renderHudCursorOnly(P) {
+    this.hud.resize(P.compRT.width, P.compRT.height, P.uiScale);
+    this.hud.set({
+      timeLeft: this.timeLimit, timeLimit: this.timeLimit,
+      prompt: '', cleared: this.cleared,
+      cursor: 'bright', usePointer: true,
+      pointer: { u: this.mouse.u, v: this.mouse.v }
+    });
+    const tex = this.hud.reticle.get('bright');
+    if (!tex) return;
+    const s = this.hud.s;
+    const w = 32 * s / this.hud.W, h = 32 * s / this.hud.H;
+    P.drawOverlay(tex, {
+      x: this.mouse.u - w / 2, y: this.mouse.v - h / 2, w: w, h: h
+    });
+  }
+
+  renderExitScreen(P) {
+    const F = SATG.font;
+    this.lose.resize(P.compRT.width, P.compRT.height, P.uiScale);
+    const ctx = this.lose.ctx;
+    this.lose.clear();
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, this.lose.W, this.lose.H);
+    const s = P.uiScale;
+    // Fitted to the width like every other screen; at a fixed 3x these ran
+    // off the edge on anything narrower than a tablet.
+    const avail = Math.round(this.lose.W * 0.86);
+    const big = F.fitScale('SESSION TERMINATED', avail, 3 * s, 4 * s, s);
+    const small = F.fitScale('CLICK ANYWHERE TO RETURN', avail, s, 2 * s, s);
+    F.draw(ctx, 'SESSION TERMINATED', this.lose.W / 2, this.lose.H / 2 - 40 * s,
+           { color: '#8e8779', scale: big, tracking: 4 * s, align: 'center' });
+    F.draw(ctx, 'CLICK ANYWHERE TO RETURN', this.lose.W / 2, this.lose.H / 2 + 30 * s,
+           { color: '#4f4a42', scale: small, tracking: 2 * s, align: 'center' });
+    this.lose.upload();
+    P.drawOverlay(this.lose.texture, { x: 0, y: 0, w: 1, h: 1 });
+  }
+}
+
+/* Map a screen-space point into 0..1 local coordinates of a rect, or null
+   when the point falls outside it. */
+function rectToLocal(rect, u, v) {
+  const lu = (u - rect.x) / rect.w;
+  const lv = (v - rect.y) / rect.h;
+  if (lu < 0 || lu > 1 || lv < 0 || lv > 1) return null;
+  return { u: lu, v: lv };
+}
+
+SATG.Game = Game;
+SATG.HOLD = HOLD;
+
+})(window);
