@@ -39,10 +39,18 @@ const CONTROLS = [
     note: 'EVERYTHING THE GAME PLAYS.',
     format: (v) => Math.round(v * 100) + '%' },
 
-  { key: 'gunshot', label: 'GUNSHOT VOLUME', kind: 'range',
+  { key: 'explosion', label: 'EXPLOSION VOLUME', kind: 'range',
     min: 0, max: 1, step: 0.05,
-    note: 'THE SHOT IS THE LOUDEST SOUND IN THE GAME. THIS TURNS IT DOWN ALONE.',
+    note: 'THE BLAST IS THE LOUDEST SOUND IN THE GAME. THIS TURNS IT DOWN ALONE.',
     format: (v) => v <= 0 ? 'OFF' : Math.round(v * 100) + '%' },
+
+  { key: 'machineSound', label: 'MACHINE SOUND', kind: 'toggle',
+    note: 'THE WHIRR OF THE MACHINE AND THE TURNING OF ITS WHEEL. THE MACHINE ' +
+          'IS STILL THERE WITH THIS OFF, AND IT STILL GOES OFF.' },
+
+  { key: 'animations', label: 'ANIMATIONS', kind: 'toggle',
+    note: 'THE OPENING WALK, AND THE MACHINE FIRING. WITH THIS OFF A RUN BEGINS ' +
+          'AT THE DESK AND A WRONG ANSWER IS THE BLAST ALONE.' },
 
   { key: 'grain', label: 'FILM GRAIN', kind: 'range',
     min: 0, max: 2, step: 0.1,
@@ -67,7 +75,9 @@ const CONTROLS = [
 const DEFAULTS = {
   brightness: 1.00,
   volume: 0.85,
-  gunshot: 1.00,
+  explosion: 1.00,
+  machineSound: true,
+  animations: true,
   grain: 1.00,
   vignette: 1.00,
   calmPanic: false
@@ -81,6 +91,12 @@ function load() {
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return;
+    /* The shot became a blast, and the setting was renamed with it. Anyone who
+       had already turned it down deserves to still have it turned down, so the
+       old key is read once and then never again. */
+    if (parsed.explosion === undefined && typeof parsed.gunshot === 'number') {
+      parsed.explosion = parsed.gunshot;
+    }
     for (const c of CONTROLS) {
       if (c.kind === 'action') continue;
       const v = parsed[c.key];
@@ -127,7 +143,12 @@ function apply() {
      SATG.settings.values itself, in the same place it computes them. */
   if (SATG.audio) {
     SATG.audio.setMasterVolume(values.volume);
-    SATG.audio.setGunshotVolume(values.gunshot);
+    SATG.audio.setExplosionVolume(values.explosion);
+    /* Turning this off has to silence what is ALREADY running, not just refuse
+       the next sound - the bed and the wheel are held open for the whole run,
+       so a flag consulted only at start time would leave them going until the
+       player died. setMachineAudio tears them down itself. */
+    SATG.audio.setMachineAudio(values.machineSound);
   }
 }
 

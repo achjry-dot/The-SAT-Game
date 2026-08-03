@@ -438,6 +438,12 @@ class Pipeline {
     const c = opts.color || [1, 1, 1, 1];
     const uvr = opts.uvRect || [0, 0, 1, 1];
 
+    /* Fire has to ADD to what is behind it. Over-blending a flame darkens the
+       room it is supposed to be lighting, which reads as a decal rather than
+       an explosion. Set for this one quad and put straight back, so no caller
+       has to know the state was ever touched. */
+    if (opts.additive) gl.blendFunc(gl.ONE, gl.ONE);
+
     const p = this.progOverlay.use();
     p.vec4('uRect', rect.x, rect.y, rect.w, rect.h)
      .vec4('uUvRect', uvr[0], uvr[1], uvr[2], uvr[3])
@@ -451,6 +457,7 @@ class Pipeline {
 
     gl.bindVertexArray(this.emptyVao);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    if (opts.additive) gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     return this;
   }
 

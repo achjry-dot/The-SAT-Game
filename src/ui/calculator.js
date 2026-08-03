@@ -820,22 +820,69 @@ class Calculator {
     ctx.imageSmoothingEnabled = false;
     this.handHits.length = 0;
 
-    ctx.fillStyle = CASE_DARK;
-    ctx.fillRect(0, 0, HAND_W, HAND_H);
-    ctx.fillStyle = CASE_LIGHT;
-    ctx.fillRect(6, 6, HAND_W - 12, HAND_H - 12);
-    ctx.fillStyle = CASE_DARK;
-    ctx.fillRect(12, 12, HAND_W - 24, HAND_H - 24);
+    /* ---- the case.
 
-    const sx = 26, sy = 26, sw = HAND_W - 52, sh = 150;
+       Built as stacked plates rather than a flat rectangle, because the thing
+       is meant to read as a piece of hardware someone was issued: a moulded
+       shell, a recessed well the keys sit in, a screwed-on bezel over the
+       display, and a ribbed grip down each side. Every one of these is two or
+       three fillRects and together they are the difference between "a
+       calculator" and "a panel with buttons drawn on it". */
+    ctx.fillStyle = '#0b0b09';
+    ctx.fillRect(0, 0, HAND_W, HAND_H);
+    ctx.fillStyle = '#4a4841';                 // top edge catching the lamp
+    ctx.fillRect(4, 4, HAND_W - 8, HAND_H - 8);
+    ctx.fillStyle = CASE_LIGHT;
+    ctx.fillRect(6, 8, HAND_W - 12, HAND_H - 14);
+    ctx.fillStyle = '#2c2b27';
+    ctx.fillRect(10, 12, HAND_W - 20, HAND_H - 22);
+
+    // Ribbed grips down both flanks.
+    ctx.fillStyle = '#1b1a17';
+    for (let y = 120; y < HAND_H - 40; y += 7) {
+      ctx.fillRect(10, y, 7, 3);
+      ctx.fillRect(HAND_W - 17, y, 7, 3);
+    }
+
+    // Four case screws.
+    for (const [cx, cy] of [[19, 21], [HAND_W - 19, 21],
+                            [19, HAND_H - 21], [HAND_W - 19, HAND_H - 21]]) {
+      ctx.fillStyle = '#15140f';
+      ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#565248';
+      ctx.beginPath(); ctx.arc(cx, cy, 3.4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#15140f';
+      ctx.fillRect(cx - 3.4, cy - 0.8, 6.8, 1.6);
+    }
+
+    // Maker's plate, so it belongs to the same institution as the room.
+    F.draw(ctx, 'FEDERAL / TI-84', 30, 22, { color: '#6f6a5e', scale: 1, tracking: 2 });
+    F.draw(ctx, 'CE-957', HAND_W - 30, 22,
+           { color: '#57534a', scale: 1, tracking: 2, align: 'right' });
+
+    /* ---- the display, in a screwed-down bezel. */
+    const sx = 26, sy = 40, sw = HAND_W - 52, sh = 150;
+    ctx.fillStyle = '#141310';
+    ctx.fillRect(sx - 8, sy - 8, sw + 16, sh + 16);
+    ctx.fillStyle = '#3a3830';
+    ctx.fillRect(sx - 6, sy - 6, sw + 12, sh + 12);
     ctx.fillStyle = '#05100a';
     ctx.fillRect(sx, sy, sw, sh);
     ctx.fillStyle = GREEN_DEEP;
     ctx.fillRect(sx + 3, sy + 3, sw - 6, sh - 6);
 
-    F.draw(ctx, 'SCIENTIFIC', sx + 10, sy + 10, { color: GREEN_DIM, scale: 1, tracking: 1 });
+    // A little glass, catching the room across the top of the panel.
+    const gl = ctx.createLinearGradient(sx, sy, sx, sy + sh * 0.5);
+    gl.addColorStop(0, 'rgba(180,255,205,0.09)');
+    gl.addColorStop(1, 'rgba(180,255,205,0)');
+    ctx.fillStyle = gl;
+    ctx.fillRect(sx + 3, sy + 3, sw - 6, sh * 0.5);
 
-    let hy = sy + 34;
+    F.draw(ctx, 'SCIENTIFIC', sx + 10, sy + 10, { color: GREEN_DIM, scale: 1, tracking: 1 });
+    F.draw(ctx, 'DEG', sx + sw - 10, sy + 10,
+           { color: GREEN_DARK, scale: 1, tracking: 1, align: 'right' });
+
+    let hy = sy + 32;
     for (let i = Math.min(2, this.history.length - 1); i >= 0; i--) {
       const h = this.history[i];
       F.draw(ctx, h.src.slice(-30), sx + 10, hy, { color: GREEN_DARK, scale: 1 });
@@ -850,29 +897,50 @@ class Calculator {
     ctx.fillStyle = 'rgba(0,0,0,0.22)';
     for (let y = sy + 3; y < sy + sh - 3; y += 3) ctx.fillRect(sx + 3, y, sw - 6, 1);
 
-    const padTop = sy + sh + 20;
+    /* ---- the keypad, in a recessed well. */
+    const padTop = sy + sh + 26;
     const cols = 5, rows = KEYPAD.length, gap = 8;
     const kw = Math.floor((HAND_W - 52 - gap * (cols - 1)) / cols);
-    const kh = Math.floor((HAND_H - padTop - 30 - gap * (rows - 1)) / rows);
+    const kh = Math.floor((HAND_H - padTop - 34 - gap * (rows - 1)) / rows);
+
+    ctx.fillStyle = '#191814';
+    ctx.fillRect(18, padTop - 10, HAND_W - 36, rows * (kh + gap) + 12);
 
     KEYPAD.forEach((row, r) => {
       row.forEach((label, c) => {
         const x = 26 + c * (kw + gap), y = padTop + r * (kh + gap);
+
+        /* Colour-coded by what the key does, the way a real graphing
+           calculator is: pale for digits, dark for operators, green for the
+           two that commit. Reading a keypad is a scanning task and colour is
+           how it is made possible. */
+        const isDigit = /^[0-9.]$/.test(label);
+        const isFn = label.length > 1 && label !== 'GRAPH';
         const accent = label === '=' || label === 'GRAPH';
-        ctx.fillStyle = '#0e0e0c';
-        ctx.fillRect(x, y, kw, kh);
-        ctx.fillStyle = accent ? '#25452e' : '#2b2a26';
-        ctx.fillRect(x, y, kw - 2, kh - 2);
-        ctx.fillStyle = accent ? '#1a3021' : '#201f1c';
-        ctx.fillRect(x + 2, y + 2, kw - 4, kh - 4);
-        const scale = label.length > 1 ? 1 : 2;
-        F.draw(ctx, label, x + kw / 2, y + (kh - F.cellH * scale) / 2,
-               { color: accent ? GREEN : '#b9b2a4', scale, align: 'center' });
+
+        const face = accent ? '#24462d' : isDigit ? '#38362f' : isFn ? '#26251f' : '#2e2c26';
+        const lip  = accent ? '#356b43' : isDigit ? '#4c4940' : '#3a3830';
+
+        // Shadow in the well, then the key's lit top edge, then its face.
+        ctx.fillStyle = '#0b0b09';
+        ctx.fillRect(x, y + 3, kw, kh - 1);
+        ctx.fillStyle = lip;
+        ctx.fillRect(x, y, kw, kh - 3);
+        ctx.fillStyle = face;
+        ctx.fillRect(x + 1, y + 2, kw - 2, kh - 6);
+        // A highlight along the top of the cap.
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        ctx.fillRect(x + 2, y + 2, kw - 4, 2);
+
+        const scale = label.length > 2 ? 1 : 2;
+        F.draw(ctx, label, x + kw / 2, y + (kh - 4 - F.cellH * scale) / 2 + 1,
+               { color: accent ? GREEN : isDigit ? '#ded6c6' : '#a9a294',
+                 scale, align: 'center' });
         this.handHits.push({ x, y, w: kw, h: kh, label });
       });
     });
 
-    F.draw(ctx, 'ESC - SET DOWN', HAND_W / 2, HAND_H - 24,
+    F.draw(ctx, 'ESC - SET DOWN', HAND_W / 2, HAND_H - 26,
            { color: '#6a6459', scale: 1, align: 'center', tracking: 1 });
 
     this.handTexture.update(this.handCanvas);

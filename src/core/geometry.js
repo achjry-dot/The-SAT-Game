@@ -220,6 +220,41 @@ class Builder {
     return this;
   }
 
+  /**
+   * UV sphere centred on the origin. Low segment counts on purpose - at 8x6
+   * the facets are clearly visible, which is both period-correct and, for the
+   * one thing that uses this, exactly right: a faceted fireball reads as
+   * something violent and unstable in a way a smooth one does not.
+   */
+  sphere(radius, segU, segV, opts) {
+    opts = opts || {};
+    segU = Math.max(3, segU | 0);
+    segV = Math.max(2, segV | 0);
+    const uv = opts.uvScale === undefined ? 1 : opts.uvScale;
+
+    const base = (this.verts.length / VERTEX_FLOATS) | 0;
+    for (let j = 0; j <= segV; j++) {
+      const v = j / segV;
+      const phi = v * Math.PI;                 // 0 at the north pole
+      const sp = Math.sin(phi), cp = Math.cos(phi);
+      for (let i = 0; i <= segU; i++) {
+        const u = i / segU;
+        const th = u * Math.PI * 2;
+        const nx = sp * Math.cos(th), ny = cp, nz = sp * Math.sin(th);
+        this.vertex(nx * radius, ny * radius, nz * radius, nx, ny, nz, u * uv, v * uv);
+      }
+    }
+
+    const stride = segU + 1;
+    for (let j = 0; j < segV; j++) {
+      for (let i = 0; i < segU; i++) {
+        const a = base + j * stride + i;
+        this.quadIdx(a, a + stride, a + stride + 1, a + 1);
+      }
+    }
+    return this;
+  }
+
   /* A flat quad given by explicit corners, wound a-b-c-d. Useful for the
      odd non-axis-aligned panel without building a whole transform. */
   quad(a, b, c, d, uScale, vScale) {

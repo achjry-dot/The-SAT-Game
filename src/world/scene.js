@@ -34,6 +34,25 @@ const CALC_POS  = { x: 0.47,  y: TABLE.top + 0.001, z: -0.63, w: 0.17, d: 0.30, 
 const EYE = { x: 0, y: 1.235, z: 0.30 };
 const REST_PITCH = -0.40;
 
+/* The room's own atmosphere. These are the pipeline's shipped defaults, named
+   and restated here because the corridor sets its own and something has to
+   put them back. */
+const ROOM_ATMOS = {
+  ambient: [0.014, 0.012, 0.011],
+  fogDensity: 0.165,
+  fogColor: [0.016, 0.011, 0.009]
+};
+
+/* Cables ripped out of the ceiling and left hanging: [x, z, drop]. Placed off
+   to the sides and behind the desk so they frame the room without ever
+   getting between the player and the sheet they are trying to read. */
+const SEVERED = [
+  [-1.28, -0.35, 1.02],
+  [1.24, 0.42, 0.86],
+  [-0.95, 1.35, 1.24],
+  [1.40, -1.55, 0.72]
+];
+
 /* Baked ambient occlusion, applied as vertex tint. */
 const AO_DARK = [0.34, 0.32, 0.31];
 const AO_MID  = [0.62, 0.60, 0.58];
@@ -73,6 +92,31 @@ class Scene {
 
     this.showPaper = true;
     this.showCalc = true;
+
+    /* The machine across the front of the room. Present in every run, whatever
+       the player has switched off - see world/machine.js. It contributes its
+       own lights, so the rig handed to the pipeline is rebuilt each frame
+       rather than being the fixed array above. */
+    this.machine = new SATG.Machine(gl, textures);
+    this._lightRig = [];
+
+    /* An arc at the end of every severed cable. The positions are derived
+       from SEVERED rather than restated, so a cable and its spark cannot
+       drift apart when one of them is moved. */
+    this.sparks = new SATG.SparkSet(gl, SEVERED.map(([x, z, len]) => ({
+      x: x + 0.05, y: ROOM.h - 0.10 - len, z: z + 0.03, size: 0.13
+    })));
+
+    /* The explosion, as geometry standing where the machine stands. Idle and
+       costing nothing until something triggers it. */
+    this.fireball = new SATG.Fireball(gl);
+
+    /* How far the desk has been thrown, 0..1. The table, the sheet and the
+       calculator all ride the same transform, because they go over together. */
+    this.tableFlip = 0;
+    this._flipM = mat4.create();
+    this._flipA = mat4.create();
+    this._flipB = mat4.create();
   }
 
   /* ==================================================================== */
@@ -89,6 +133,24 @@ class Scene {
     this.meshes.cable    = this.buildCables();
     this.meshes.paper    = this.buildPaperQuad();
     this.meshes.calc     = this.buildCalcBody();
+    this.meshes.plate    = this.buildDoorPlate();
+  }
+
+  /* The number on the door behind the seat. The same plate the corridor hangs
+     on the outside of it, so the room the player is put into is identifiably
+     the room they were walked to. */
+  buildDoorPlate() {
+    this.plateTexture = new SATG.gl.Texture(this.gl, {
+      source: SATG.numberPlate('957'), filter: this.gl.NEAREST,
+      wrap: this.gl.CLAMP_TO_EDGE
+    });
+    const b = new Builder();
+    b.setColor(AO_LIT);
+    b.push();
+    b.translate(0, 1.63, ROOM.d / 2 - 0.105).rotateY(Math.PI);
+    b.grid(0.40, 0.20, 2, 2, 1, 1);
+    b.pop();
+    return b.build(this.gl);
   }
 
   /* Floor and ceiling. Heavily subdivided so the lamp reads as a pool. */
@@ -157,12 +219,34 @@ class Scene {
     b.pop();
     b.pop();
 
-    // Wall plating behind the player, to break the flat surface.
+    /* The door the player came through, directly behind the seat, with its
+       number still on it. It is shut, and it is the only other way out of
+       this room - which is why the opening spends four seconds on the one in
+       the corridor that is not this. */
     b.setColor(AO_DARK);
-    for (let i = 0; i < 3; i++) {
+    b.push();
+    b.translate(0, 1.03, hd - 0.05);
+    b.box(0.96, 2.06, 0.10, { seg: [3, 6, 1], uvScale: 1.8, skip: ['pz'] });
+    b.pop();
+
+    b.setColor(AO_MID);
+    for (const dx of [-0.54, 0.54]) {
       b.push();
-      b.translate(-0.95 + i * 0.95, 1.55, hd - 0.05);
-      b.box(0.80, 0.62, 0.06, { seg: [2, 2, 1], uvScale: 2.0, skip: ['pz'] });
+      b.translate(dx, 1.03, hd - 0.08);
+      b.box(0.12, 2.20, 0.12, { seg: [1, 6, 1], uvScale: 2.4 });
+      b.pop();
+    }
+    b.push();
+    b.translate(0, 2.13, hd - 0.08);
+    b.box(1.20, 0.12, 0.12, { uvScale: 2.4 });
+    b.pop();
+
+    // Wall plating either side of it, to break the flat surface.
+    b.setColor(AO_DARK);
+    for (const x of [-1.15, 1.15]) {
+      b.push();
+      b.translate(x, 1.55, hd - 0.05);
+      b.box(0.70, 0.62, 0.06, { seg: [2, 2, 1], uvScale: 2.0, skip: ['pz'] });
       b.pop();
     }
 
@@ -422,6 +506,26 @@ class Scene {
     run(-1.55, ROOM.h - 0.24, 1.10, -0.40, ROOM.h - 0.30, 1.60, 0.26, 8);
     run(0, ROOM.h - 0.06, TABLE.cz, -1.05, ROOM.h - 0.20, TABLE.cz, 0.08, 5, 0.009);
 
+    /* Along the floor at the foot of the left-hand wall. This is what the
+       player lands facing at the end of the opening - the first thing they
+       ever see in this room is its wiring, from the floor. Laid with almost
+       no sag, because these are pinned to the skirting rather than hung. */
+    run(-1.58, 0.035, 1.90, -1.58, 0.035, -2.10, 0.012, 10, 0.016);
+    run(-1.52, 0.030, 1.40, -1.52, 0.030, -1.80, 0.010, 9, 0.011);
+    // One that breaks off and runs under the table toward the machine.
+    run(-1.52, 0.030, -0.40, -0.60, 0.028, -1.40, 0.015, 6, 0.010);
+
+    /* Cables torn out of the ceiling and left hanging, ending in nothing.
+       Straight drops rather than catenaries - these are not runs going
+       anywhere, they are the severed halves of ones that were, and the ends
+       are where the sparks live. See SPARKS below. */
+    for (const [x, z, len] of SEVERED) {
+      const top = ROOM.h - 0.10;
+      run(x, top, z, x + 0.05, top - len, z + 0.03, 0.02, 5, 0.013);
+      // A little slack where it comes out of the ceiling.
+      run(x - 0.24, top - 0.04, z, x, top, z, 0.09, 4, 0.011);
+    }
+
     return b.build(this.gl);
   }
 
@@ -484,6 +588,51 @@ class Scene {
     // The far red lamp pulses, faster as time runs out.
     const pulse = 0.5 + 0.5 * Math.sin(this.time * (1.6 + panic * 5.0));
     this.lights[3].intensity = 0.26 + pulse * (0.36 + panic * 0.90);
+
+    /* The machine winds up with the clock. Its own bed and its wheel follow
+       this same number in game.js, so what is heard and what is seen are
+       driven from one place and cannot drift apart. */
+    this.machine.intensity = panic;
+    this.machine.update(dt);
+    this.sparks.update(dt);
+    this.fireball.update(dt);
+  }
+
+  /* The rig actually handed to the pipeline: the room's five fixed lights
+     plus whatever the machine is contributing this frame. Rebuilt rather than
+     mutated, because the machine's contribution comes and goes. */
+  lightRig() {
+    const rig = this._lightRig;
+    rig.length = 0;
+    /* The fireball goes FIRST, and the room's own lamps after it. The shader
+       takes the first eight and drops the rest, and while the room is
+       exploding the explosion is the light source that matters - being
+       silently discarded because the wall sconces got there first is exactly
+       the kind of bug that shows up as "the fire doesn't light anything". */
+    this.fireball.lights(rig);
+    for (const l of this.lights) rig.push(l);
+    this.machine.lights(rig);
+    this.sparks.lights(rig);
+    return rig;
+  }
+
+  /* The desk going over. Rotated about its own front edge - the edge nearest
+     the player - so it lifts INTO the frame and hinges away, which is what a
+     table does when something hits it from the far side.
+
+     Built as translate(pivot) * rotate * translate(-pivot) because the table
+     mesh has its world position baked into its vertices; rotating it about
+     the origin would swing it through the far wall. */
+  tableTransform() {
+    if (this.tableFlip <= 0.0001) return this.identity;
+    const k = clamp(this.tableFlip, 0, 1);
+    const px = 0, py = TABLE.top, pz = TABLE.cz + TABLE.d / 2;
+
+    const m = mat4.fromTranslation(this._flipM, px, py + k * 0.55, pz);
+    mat4.multiply(m, m, mat4.fromXRotation(this._flipA, -k * 1.45));
+    mat4.multiply(m, m, mat4.fromZRotation(this._flipB, k * 0.30));
+    mat4.multiply(m, m, mat4.fromTranslation(this._flipA, -px, -py, -pz));
+    return m;
   }
 
   /**
@@ -516,31 +665,63 @@ class Scene {
     const T = this.tex;
     const I = this.identity;
 
-    pipeline.setLights(this.lights);
+    /* Restated every frame rather than set once at boot: the corridor is a
+       second world with its own atmosphere, and after the opening has run,
+       "whatever the last scene left behind" would be its numbers, not these. */
+    pipeline.ambient = ROOM_ATMOS.ambient;
+    pipeline.fogDensity = ROOM_ATMOS.fogDensity;
+    pipeline.fogColor = ROOM_ATMOS.fogColor;
+
+    pipeline.setLights(this.lightRig());
     pipeline.beginWorld();
 
-    pipeline.drawMesh(this.meshes.concrete, I, { map: T.concrete, tint: [0.86, 0.84, 0.82] });
-    pipeline.drawMesh(this.meshes.steel,    I, { map: T.steel,    tint: [0.92, 0.86, 0.82] });
-    pipeline.drawMesh(this.meshes.wood,     I, { map: T.wood,     tint: [1.0, 0.94, 0.88] });
-    pipeline.drawMesh(this.meshes.iron,     I, { map: T.iron,     tint: [0.90, 0.88, 0.86] });
-    pipeline.drawMesh(this.meshes.plastic,  I, { map: T.plastic,  tint: [0.88, 0.86, 0.84] });
-    pipeline.drawMesh(this.meshes.cable,    I, { map: T.cable,    tint: [0.80, 0.78, 0.76] });
+    /* Rust-shifted, the floor most of all. The lamp overhead is already warm,
+       but a neutral tint under it averaged out to grey and the floor read as
+       swept concrete in an office. Weighting the tint toward the oxide lets
+       the rust already in the texture take the light first. */
+    pipeline.drawMesh(this.meshes.concrete, I, { map: T.concrete, tint: [0.96, 0.74, 0.60] });
+    pipeline.drawMesh(this.meshes.steel,    I, { map: T.steel,    tint: [0.94, 0.80, 0.70] });
+    pipeline.drawMesh(this.meshes.iron,     I, { map: T.iron,     tint: [0.92, 0.82, 0.74] });
+    pipeline.drawMesh(this.meshes.plastic,  I, { map: T.plastic,  tint: [0.90, 0.82, 0.76] });
+    pipeline.drawMesh(this.meshes.cable,    I, { map: T.cable,    tint: [0.82, 0.74, 0.70] });
 
-    // Screens: unlit and emissive, so they glow rather than being lit.
+    /* The terminals now run the same code the machine's own panels do. They
+       were always meant to be part of it; until there was a machine, there
+       was nothing for them to be part of. */
     pipeline.drawMesh(this.meshes.crt, I, {
-      map: T.crt, tint: [0.55, 1.0, 0.65], emissive: [0.85, 0.85, 0.85], jitter: 0.4
+      map: this.machine.code.texture, tint: [0.75, 1.0, 0.85],
+      emissive: [0.85, 0.85, 0.85], jitter: 0.4
     });
 
+    // The number on the door behind the seat.
+    pipeline.drawMesh(this.meshes.plate, I, {
+      map: this.plateTexture, tint: [1, 1, 1], emissive: [0.26, 0.25, 0.22], jitter: 0.2
+    });
+
+    this.machine.render(pipeline);
+    this.sparks.render(pipeline);
+
+    /* The desk and everything on it share one transform, so when it goes over
+       the sheet and the calculator go with it rather than hanging in the air
+       where the tabletop used to be. */
+    const X = this.tableTransform();
+    pipeline.drawMesh(this.meshes.wood, X, { map: T.wood, tint: [1.0, 0.94, 0.88] });
+
     if (this.showCalc) {
-      pipeline.drawMesh(this.meshes.calc, I, { map: T.plastic, tint: [0.80, 0.80, 0.82] });
+      pipeline.drawMesh(this.meshes.calc, X, { map: T.plastic, tint: [0.80, 0.80, 0.82] });
     }
     if (this.showPaper) {
       // Slightly reduced jitter: a twitching sheet of paper looks like an
       // error rather than an effect, and the player needs to find it.
-      pipeline.drawMesh(this.meshes.paper, I, {
+      pipeline.drawMesh(this.meshes.paper, X, {
         map: this.paperTexture || T.paper, tint: [1, 1, 1], jitter: 0.35, affine: 0.6
       });
     }
+
+    /* Last in the world pass, so it is depth-tested against everything the
+       room has already put down. Until it is bigger than the desk, the desk
+       is in front of it - which is the whole reason for doing this in 3D. */
+    this.fireball.render(pipeline);
   }
 
   /* ------------------------------------------------------------ picking

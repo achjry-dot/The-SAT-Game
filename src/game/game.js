@@ -3,8 +3,10 @@
 
    States
      title     the room drifts behind the title card
+     opening   the walk in, and the machine being set up. See game/cinematic.js
      intro     fade up from black as the player lifts their head off the desk
      exam      the loop: read, answer, submit, repeat
+     verdict   the sheet is down and the machine is deciding
      lose      pitch black, YOU LOSE, RETRY / QUIT
      exiting   the session is over
 
@@ -99,6 +101,17 @@ class Game {
     this.lookYaw = 0;
     this.lookPitch = 0;
 
+    /* The two directors. Neither owns any state the exam depends on, so both
+       can be skipped outright - which is exactly what R and the ANIMATIONS
+       setting do. The corridor's geometry is not built until the opening
+       first runs, so a player who never watches it never pays for it. */
+    this.opening = new SATG.cinematic.Opening(this);
+    this.verdict = new SATG.cinematic.Verdict(this);
+    this._kick = { x: 0, y: 0, z: 0, roll: 0, pitch: 0 };
+    /* How many times the machine has been watched going off this session.
+       Past the first, Infinity stops staging it - see submit(). */
+    this.deathsSeen = 0;
+
     this.fader.snap(0);
     this.fader.to(1, 1.2);
 
@@ -142,10 +155,15 @@ class Game {
      the fade so that a RETRY, which re-enters through here without going back
      to the menu, replays the same mode rather than silently reverting to the
      default one. */
-  startRun(resume, mode) {
+  /* `opts.opening` asks for the full cutscene. Set only when a run is started
+     from the title menu: RETRY and RESTART deliberately do not replay half a
+     minute of corridor the player has just watched, and a drill is a practice
+     tool rather than a story, so it never gets one either. */
+  startRun(resume, mode, opts) {
     if (this.transitioning) return;
     this.transitioning = true;
     this.escMenu.hide();
+    this._wantOpening = !!(opts && opts.opening);
     if (mode) this.mode = mode;
     if (!this.mode) {
       this.mode = { kind: SATG.menu.KIND.INFINITY, section: SATG.menu.SECTION.BOTH };
@@ -165,7 +183,6 @@ class Game {
       }
       this.best = Math.max(this.best, this.cleared);
 
-      this.state = 'intro';
       this.introT = 0;
       this.hold = HOLD.NONE;
       this.scene.showPaper = true;
@@ -173,6 +190,13 @@ class Game {
       this.lookYaw = this.lookPitch = 0;
       this.result = null;
       this.runElapsed = 0;
+      this.hoverTarget = null;
+      // A previous run may have ended with the desk on its side.
+      this.scene.tableFlip = 0;
+      this.verdict.phase = 'idle';
+      this.scene.machine.dread = 0;
+      this.scene.fireball.clear();
+      this.scene.machine.readout.setTimer(null);
 
       SATG.audio.startAmbience();
 
@@ -184,10 +208,44 @@ class Game {
         this.buildForm();
       }
 
-      // Fade up slowly while the head comes off the desk.
-      this.fader.to(1, 2.6, () => { this.transitioning = false; });
-      SATG.audio.latch();
+      /* The question is loaded BEFORE either opening runs, so whichever way
+         the player gets to the desk the sheet is already the right one. The
+         clock does not start until the state is 'exam', and neither opening
+         is that state. */
+      const cinematic = this._wantOpening && SATG.settings.values.animations &&
+                        !this.isDrill;
+
+      if (cinematic) {
+        this.state = 'opening';
+        /* The cutscene owns the fade for its whole length - every one of its
+           fades is a beat of the timeline, and routing them through the
+           game's fader would need a callback chain to sequence. */
+        this.fader.snap(1);
+        this.opening.start();
+        this.transitioning = false;
+      } else {
+        this.state = 'intro';
+        // The machine is simply already there, armed, as if it always had been.
+        this.opening.finish();
+        // Fade up slowly while the head comes off the desk.
+        this.fader.to(1, 2.6, () => { this.transitioning = false; });
+        SATG.audio.latch();
+      }
     });
+  }
+
+  /* The one way out of the cutscene, however it ended - run to the last beat,
+     cut short with R, or never started at all. */
+  finishOpening() {
+    if (this.state !== 'opening') return;
+    this.opening.finish();
+    this.state = 'exam';
+    this.introT = 1;
+    this.hold = HOLD.NONE;
+    this.lookYaw = this.lookPitch = 0;
+    this.transitioning = false;
+    this.fader.snap(1);
+    SATG.audio.latch();
   }
 
   /* A drill runs on the same machinery as Infinity - no form, one question at a
@@ -286,14 +344,29 @@ class Game {
     mod.finished = true;
 
     SATG.audio.stopTension(true);
+    SATG.audio.stopMachineBed(true);
 
     if (this.form.isLast) {
-      /* The last module of the form ends the way every run in this game ends,
-         because the brief asks for it: the shot, then the black. The score
-         report is what is waiting on the other side of it. */
-      SATG.audio.gunshot();
-      SATG.audio.stopAmbience();
-      this.showResults(reason);
+      /* The last module of the form ends the way every run in this game ends:
+         the machine goes off, and the score report is what is waiting on the
+         other side of it. Straight to the blast with no scan - a module test
+         gets no pause between questions and no noise out of the machine, so
+         it does not get a countdown to its own ending either. */
+      if (SATG.settings.values.animations) {
+        this.state = 'verdict';
+        this.hold = HOLD.NONE;
+        this.hoverTarget = null;
+        this.verdict.begin(false, () => {
+          SATG.audio.stopAmbience();
+          SATG.audio.stopWheel();
+          this.showResults(reason);
+        }, { immediate: true });
+      } else {
+        SATG.audio.explosion();
+        SATG.audio.stopAmbience();
+        SATG.audio.stopWheel();
+        this.showResults(reason);
+      }
       return;
     }
 
@@ -370,6 +443,12 @@ class Game {
     if (this.form) {
       const mod = this.form.module;
       mod.record(this.paper.currentResponse());
+      /* The machine reads the sheet on a module test too - but it cannot say
+         whether the answer was right, because nothing is graded until the
+         module's clock stops, and a verdict here would leak the key. So it
+         scans and says nothing, over the top of the player carrying on: no
+         pause between questions, and no sound, exactly as the brief asks. */
+      this.scene.machine.pulseScan(0.55);
       if (mod.index >= mod.count - 1) {
         // Last question answered: end the module rather than sitting on it.
         this.finishModule('completed');
@@ -391,34 +470,89 @@ class Game {
     this.bank.recordResult(correct, this.question, response, this._questionTime || 0);
     this._questionTime = 0;
 
+    /* Scored immediately, presented afterwards. A player who closes the tab
+       while the machine is still deciding keeps the question they got right;
+       tying the save to the end of an animation would lose it. */
     if (correct) {
       this.cleared++;
       this.best = Math.max(this.best, this.cleared);
       this.writeSave({ cleared: this.cleared, streak: this.bank.correctStreak, best: this.best });
       this.title.setCanContinue(true);
-      SATG.audio.ding();
-      this.nextQuestion(true);
-      // Answering returns the sheet to the table - the next question is a
-      // new sheet, and the player has to pick it up again.
-      this.setHold(HOLD.NONE, true);
-    } else if (this.isDrill) {
-      /* A drill does not end on a wrong answer.
-
-         The gunshot still fires, because the feedback is the point and a silent
-         miss reads as an input that did not register - but the run continues to
-         the next question of the same type. Drilling a weakness twelve times is
-         the whole purpose; dying on the first one would make it impossible. */
-      SATG.audio.gunshot();
-      /* The tally comes from the bank, which already counts both, so there is
-         no second copy of the same number to drift out of step. */
-      this.nextQuestion(true);
-      this.setHold(HOLD.NONE, true);
-    } else {
-      this.die('wrong');
     }
+
+    /* Answering always returns the sheet to the table. In Infinity that is the
+       point rather than a side effect: the player has to be looking at the
+       machine when it decides, and they cannot be if the paper is filling the
+       screen. */
+    this.setHold(HOLD.NONE, true);
+
+    const M = this.scene.machine;
+
+    /* The blast is worth watching once. After that it is a toll on every
+       retry, and Infinity is a mode you are meant to retry - so the first
+       death of a session plays in full and every one after it is the sound
+       and the cut, with no half second of fire to sit through. Getting it
+       RIGHT still animates every time: that is the loop, not the punishment.
+
+       Session-scoped rather than saved. A reload is a deliberate act, and
+       someone who reloads to show the thing to somebody else should get to. */
+    const seenBlast = this.deathsSeen > 0;
+    const animate = SATG.settings.values.animations && !this.isDrill &&
+                    (correct || !seenBlast);
+
+    if (!animate) {
+      /* No pause and no cutscene - but the machine is still there and still
+         reacts, because it is there in every run whatever is switched off.
+         A drill never animates at all: drilling a weakness twelve times is
+         the whole purpose, and a death animation between each one would make
+         that unbearable. */
+      /* A pulse, not a state: the verdict shows and the panel goes back to
+         ARMED behind it, because on this path the run does not stop to let
+         anyone read it. */
+      M.pulse(correct ? SATG.MACHINE_DISPLAY.RIGHT : SATG.MACHINE_DISPLAY.WRONG, 0.7);
+      if (correct) M.flashTick(); else M.flashCross();
+
+      if (correct) {
+        SATG.audio.ding();
+        this.nextQuestion(true);
+      } else if (this.isDrill) {
+        /* A drill does not end on a wrong answer. The blast still fires,
+           because the feedback is the point and a silent miss reads as an
+           input that did not register - but the run continues to the next
+           question of the same type. The tally comes from the bank, which
+           already counts both, so there is no second copy to drift. */
+        SATG.audio.explosion();
+        this.nextQuestion(true);
+      } else {
+        this.die('wrong');
+      }
+      return;
+    }
+
+    // The machine takes it from here.
+    this.state = 'verdict';
+    this.hoverTarget = null;
+    this.verdict.begin(correct, () => this.afterVerdict(correct));
   }
 
-  die(reason) {
+  /* What the machine's answer actually costs. Called once, whether the
+     verdict played out in full or was cut short with R. */
+  afterVerdict(correct) {
+    if (correct) {
+      this.state = 'exam';
+      this.scene.machine.setDisplay(SATG.MACHINE_DISPLAY.ARMED);
+      this.nextQuestion(true);
+      return;
+    }
+    /* The blast already fired - its sound, its light, and its fade to black.
+       die() must not stage a second one on top of it. */
+    this.die('wrong', true);
+  }
+
+  /* `alreadyBlasted` is set when the verdict animation has already fired the
+     machine. Everything else about dying is unchanged; only the noise and the
+     cut to black would otherwise happen twice. */
+  die(reason, alreadyBlasted) {
     if (this.state === 'results') return;
     this.hold = HOLD.NONE;
     // The clock does not stop for the menu, so the menu can still be up when
@@ -426,8 +560,15 @@ class Game {
     this.escMenu.hide();
 
     SATG.audio.stopTension(true);
-    SATG.audio.gunshot();
+    if (!alreadyBlasted) SATG.audio.explosion();
     SATG.audio.stopAmbience();
+    SATG.audio.stopMachineBed(true);
+    SATG.audio.stopWheel();
+    this.deathsSeen++;
+    /* Whichever way the run ended, the machine registers it - the cross is
+       lit and the panel says so even when nothing was staged. */
+    this.scene.machine.flashCross();
+    this.scene.machine.setDisplay(SATG.MACHINE_DISPLAY.WRONG);
 
     /* Hard cut to black - no fade. The shot IS the transition, and it
        outranks whatever else was in progress: snap() drops any pending
@@ -514,8 +655,14 @@ class Game {
       this.result = null;
       this.paper.setNav(null);
       this.introT = 1;
-      SATG.audio.stopTension(true);
-      SATG.audio.stopAmbience();
+      this.scene.tableFlip = 0;
+      this.verdict.phase = 'idle';
+      this.scene.fireball.clear();
+      this.scene.machine.dread = 0;
+      /* Everything the run was holding open, in one call. A wheel still
+         turning under the title card is the kind of bug that only shows up
+         as "why can I hear that". */
+      SATG.audio.stopAll();
       this.title.setCanContinue(!!(this.save && this.save.cleared > 0));
       this.fader.to(1, 0.8, () => { this.transitioning = false; });
     });
@@ -524,8 +671,7 @@ class Game {
   doExit() {
     if (this.transitioning) return;
     this.transitioning = true;
-    SATG.audio.stopTension(true);
-    SATG.audio.stopAmbience();
+    SATG.audio.stopAll();
     this.fader.to(0, 1.0, () => {
       this.state = 'exiting';
       this.transitioning = false;
@@ -671,6 +817,18 @@ class Game {
      that do not scroll, and on release for the ones that do. */
   dispatchClick(u, v) {
     switch (this.state) {
+      case 'opening':
+        // A click moves the camera between the three things worth looking at;
+        // it never skips, because skipping is a decision and R is where it
+        // lives. Before the room appears there is nothing to look at, and
+        // cycleView says so by refusing.
+        this.opening.cycleView(1);
+        return;
+
+      case 'verdict':
+        // Nothing to click. The machine is not taking questions.
+        return;
+
       case 'title': {
         const i = this.title.hitTest(u, v);
         if (i !== null && this.title.setIndex(i)) SATG.audio.click();
@@ -978,6 +1136,29 @@ class Game {
     SATG.audio.resume();
     SATG.music.unlock();
 
+    /* R skips whatever the machine is currently doing to the player.
+
+       Checked here and NOWHERE else, because R is a perfectly ordinary
+       character elsewhere: it is a legal variable in the calculator and a
+       keystroke on the answer line. Confining the shortcut to the two states
+       that have something to skip is what keeps it from eating input during
+       the exam. */
+    if (this.state === 'opening') {
+      if (key === 'r' || key === 'R' || key === 'Escape' || key === 'Enter') {
+        this.finishOpening();
+        return;
+      }
+      if (key === 'ArrowLeft'  || key === 'a' || key === 'A') { this.opening.cycleView(-1); return; }
+      if (key === 'ArrowRight' || key === 'd' || key === 'D') { this.opening.cycleView(1); return; }
+      if (key >= '1' && key <= '3') { this.opening.setView(Number(key) - 1); return; }
+      return;
+    }
+
+    if (this.state === 'verdict') {
+      if (key === 'r' || key === 'R') this.verdict.skip();
+      return;
+    }
+
     if (this.state === 'title') {
       if (key === 'ArrowUp' || key === 'w' || key === 'W') { if (this.title.move(-1)) SATG.audio.click(); }
       else if (key === 'ArrowDown' || key === 's' || key === 'S') { if (this.title.move(1)) SATG.audio.click(); }
@@ -1253,7 +1434,9 @@ class Game {
         return;
       case 'mode':
         this.clearSave();
-        this.startRun(false, r.mode);
+        // The only route that plays the full opening. RETRY and RESTART come
+        // in through startRun() without it, on purpose.
+        this.startRun(false, r.mode, { opening: true });
         return;
       case 'action':
         this.runMenuAction(r.action, r.item);
@@ -1659,6 +1842,11 @@ class Game {
           Math.sin(this.pipeline.time * 0.07) * 0.05 + 0.06);
         break;
 
+      case 'opening':
+        this.opening.update(dt);
+        if (this.opening.done) this.finishOpening();
+        break;
+
       case 'intro':
         this.introT = Math.min(1, this.introT + dt / 3.4);
         this.scene.applyCamera(this.pipeline.camera, this.introT, 0, 0);
@@ -1672,6 +1860,10 @@ class Game {
            the panel open. */
         this.updateExam(dt, panic);
         this.escMenu.update(dt);
+        break;
+
+      case 'verdict':
+        this.updateVerdict(dt);
         break;
 
       case 'results':
@@ -1731,11 +1923,65 @@ class Game {
     this.pipeline.grade.grain = (0.05 + p * 0.06) * S.grain;
     this.pipeline.grade.vignette = (0.58 + p * 0.22) * S.vignette;
     this.pipeline.grade.aberration = 0.14 + p * 0.35;
-    this.pipeline.fade = this.fader.value;
+    /* The opening runs its fades off its own timeline - see the note in
+       startRun - so for those thirty seconds it, and not the fader, decides
+       how much of the frame the player is allowed to see. */
+    this.pipeline.fade = this.state === 'opening'
+      ? this.opening.fade() : this.fader.value;
+  }
+
+  /* The machine is deciding. The exam clock is deliberately NOT running: the
+     scan takes the best part of a second, and charging that to the question
+     the player has already answered could kill them for a right answer. */
+  updateVerdict(dt) {
+    this.verdict.update(dt);
+
+    const cam = this.pipeline.camera;
+    const k = this.verdict.cameraKick(this._kick);
+
+    this.scene.applyCamera(cam, 1, this.lookYaw, this.lookPitch);
+    cam.position[0] += k.x;
+    cam.position[1] += k.y;
+    cam.position[2] += k.z;
+    cam.pitch += k.pitch;
+    cam.roll += k.roll;
+
+    this.scene.tableFlip = this.verdict.tableFlip();
+  }
+
+  /* Start or stop what the machine is heard doing, from what the run IS.
+
+     Asked every frame rather than pushed at the two or three places a run
+     changes shape, because both calls are idempotent and because the
+     MACHINE SOUND setting can be turned back on in the middle of a run - a
+     flag consulted once at the start would leave the machine mute until the
+     player died. */
+  syncMachineAudio(panic) {
+    if (this.isInfinity) {
+      SATG.audio.startMachineBed();
+      SATG.audio.startWheel();
+      SATG.audio.setMachineIntensity(panic);
+    } else {
+      /* A full SAT: the wheel still turns - the scene animates it either way -
+         but the room stays quiet around it. */
+      SATG.audio.stopMachineBed(false);
+      SATG.audio.stopWheel();
+    }
   }
 
   updateExam(dt, panic) {
     this.scene.applyCamera(this.pipeline.camera, 1, this.lookYaw, this.lookPitch);
+    this.syncMachineAudio(panic);
+    // The desk is upright again; only a blast puts it over.
+    this.scene.tableFlip = 0;
+
+    /* The clock, on the machine's own panel. Same two formats the HUD picks
+       between and for the same reason: tenths are the tension on a one-minute
+       Infinity timer and are noise on a thirty-two-minute module. */
+    const left = Math.max(0, this.timeLeft);
+    this.scene.machine.readout.setTimer(this.timeLimit > 120
+      ? Math.floor(left / 60) + ':' + String(Math.floor(left % 60)).padStart(2, '0')
+      : left.toFixed(1));
 
     /* The sheet is only animated (caret blink, invalid flash) while it is in
        the player's hands. Re-rendering it while it lies on the table would
@@ -1809,7 +2055,10 @@ class Game {
     return r;
   }
 
-  calcRect() { return this.fitRect(this.calculator.handAspect, 0.86, 0); }
+  /* Lifted and shortened so the bottom row of keys clears the prompt band.
+     At 0.86 centred, the last row - which carries GRAPH - sat underneath it
+     and could be read but not aimed at. */
+  calcRect() { return this.fitRect(this.calculator.handAspect, 0.80, -0.035); }
 
   /* Keep the sheet from being dragged off screen: once an axis is larger
      than the viewport it must still cover it; while it fits, it stays
@@ -1851,6 +2100,12 @@ class Game {
     if (this.state === 'results' || this.state === 'moduleBreak' ||
         this.state === 'exiting') {
       P.beginFlat(0, 0, 0);
+    } else if (this.state === 'opening' && this.opening.inCorridor) {
+      /* A different world entirely for the first eighteen seconds. The cut
+         between the two happens under the white flash of the door giving
+         way, which is the only frame it could hide in. */
+      this.opening.corridor.render(P);
+      P.endWorld();
     } else {
       this.scene.render(P);
       P.endWorld();
@@ -1859,6 +2114,16 @@ class Game {
     P.beginOverlays();
 
     switch (this.state) {
+      case 'opening':
+        this.opening.renderOverlays(P);
+        break;
+
+      case 'verdict':
+        this.renderExamOverlays(P);
+        // Over the top of everything, including the HUD.
+        this.verdict.drawFire(P);
+        break;
+
       case 'title':
         /* Must track the viewport. Every overlay is drawn as a stretch-to-fit
            {0,0,1,1} quad with no aspect correction, so a canvas left at its
@@ -1992,8 +2257,10 @@ class Game {
   }
 
   renderHud(P, cursorStyle) {
-    // The intro plays without a HUD; the clock starts when the player is up.
-    if (this.state === 'intro') return;
+    /* The intro plays without a HUD; the clock starts when the player is up.
+       So does the blast - a reticle floating over the fire would be the one
+       thing on screen insisting this is still a game with a cursor in it. */
+    if (this.state === 'intro' || this.verdict.blasting) return;
 
     this.hud.resize(P.compRT.width, P.compRT.height, P.uiScale);
 

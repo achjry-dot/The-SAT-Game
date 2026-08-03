@@ -105,7 +105,14 @@
 <script src="src/ui/account.js"></script>
 <script src="src/ui/stats.js"></script>
 <script src="src/ui/feedback.js"></script>
+<!-- corridor.js before scene.js: the exam room hangs the same 957 plate on the
+     door behind the seat that the corridor hangs on the outside of it, and
+     takes the generator from there. machine.js before scene.js for the same
+     reason - the scene builds one in its constructor. -->
+<script src="src/world/corridor.js"></script>
+<script src="src/world/machine.js"></script>
 <script src="src/world/scene.js"></script>
+<script src="src/game/cinematic.js"></script>
 <script src="src/game/game.js"></script>
 <script src="src/main.js"></script>
 </body>
