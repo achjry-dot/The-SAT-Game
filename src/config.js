@@ -132,8 +132,8 @@ SATG.CONFIG = {
      The `service_role` key on that same page is the exact opposite: it ignores
      every one of those policies. It must never go in this file, this repo, or
      anything a browser can download. */
-  supabaseUrl: '',
-  supabaseAnonKey: '',
+  supabaseUrl: 'https://kpwmbayxkhwwcjsmemsn.supabase.co',
+  supabaseAnonKey: 'sb_publishable_BrVqdCTwKUyTYPk-xx2Z0g_bcyJeWrT',
 
   /* -------------------------------------------------------------- music
 
