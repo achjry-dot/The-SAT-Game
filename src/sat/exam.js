@@ -168,6 +168,15 @@ class ExamModule {
     this.timeLeft = this.seconds;
     this.questions = [];
     this.responses = [];             // parallel; null means unanswered
+    /* Seconds spent looking at each question, accumulated across every visit.
+
+       A module test lets the player page back and forth, so this cannot be a
+       single timestamp per question - somebody who checks their work has
+       genuinely spent time on that question twice, and both visits count. What
+       it measures is time with the question on screen, which includes time
+       spent on the calculator or reading the passage, because that is time the
+       question cost them. */
+    this.times = [];
     this.index = 0;
     this.started = false;
     this.finished = false;
@@ -194,6 +203,16 @@ class ExamModule {
     const r = this.responses[i];
     return r === undefined ? null : r;
   }
+
+  /* Charge elapsed time to whichever question is currently on screen. Called
+     from the frame loop, so it has to stay cheap and must never be the thing
+     that decides the clock - the module's own timeLeft is still authoritative. */
+  spend(dt) {
+    if (!(dt > 0)) return;
+    this.times[this.index] = (this.times[this.index] || 0) + dt;
+  }
+
+  timeAt(i) { return this.times[i] || 0; }
 
   go(i) {
     if (i < 0 || i >= this.questions.length || i === this.index) return false;
@@ -421,7 +440,15 @@ class ExamForm {
              were right, left it blank, or the generator has not annotated that
              option yet. */
           whyWrong: (!right && answered && q.format === 'mc' &&
-                     q.choices && q.choices[r]) ? (q.choices[r].why || null) : null
+                     q.choices && q.choices[r]) ? (q.choices[r].why || null) : null,
+          /* The sheet itself, so TEXT ANALYSIS can put the question back in
+             front of the player rather than only naming it. */
+          paper: SATG.satUtil.paperSnapshot(q),
+          /* Seconds spent on this question, for the pacing report. Rounded to
+             a tenth: the frame loop is not precise beyond that and storing
+             sixteen decimal places of float noise in every saved review would
+             be a lie about the resolution. */
+          seconds: Math.round(mod.timeAt(i) * 10) / 10
         });
 
         sec.total++;
@@ -479,6 +506,7 @@ class ExamForm {
           pct: perDifficulty[d].total ? perDifficulty[d].right / perDifficulty[d].total : 0
         })),
       items,
+      pacing: SATG.satUtil.pacing(items),
       strengths: rank.filter((d) => d.pct >= 0.7).slice(0, 3),
       weaknesses: rank.slice().reverse().filter((d) => d.pct < 0.7).slice(0, 3),
       answered: sections.reduce((n, s) => n + s.answered, 0),

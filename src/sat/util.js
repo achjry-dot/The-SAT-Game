@@ -287,7 +287,23 @@ function buildDistractors(correct, candidates, count, fallback) {
     }
 
     if (extra === null) break;      // nothing sensible to synthesise
-    tryAdd(extra);
+
+    /* Synthesised options get a reason too, and it says what it honestly is.
+
+       Every option a review shows now carries a "why this is wrong" line, and
+       these are the handful that no generator named - they exist only because
+       two of its authored traps collapsed onto the same value. Leaving them
+       blank made whole question types read as 92% or 99% covered forever, and
+       chasing that last few percent generator by generator would never have
+       reached it, because the gap is not in any generator. Saying "near the
+       right answer but not it" is thin, but it is true, and it is better than a
+       student clicking the circled i and finding nothing there. */
+    tryAdd(typeof extra === 'object' ? extra : {
+      v: extra,
+      why: 'Close to the right answer but not equal to it. Work the problem ' +
+           'through again and check the final step - this is the kind of value ' +
+           'a small slip in the arithmetic lands on.'
+    });
   }
 
   /* Refuse to hand back a short set. The caller throws on this, `generate()`
@@ -511,7 +527,111 @@ function generateFrom(rng, GENERATORS, opts) {
 
 /* --------------------------------------------------------------- exports */
 
+/* Everything needed to redraw the sheet a question was asked on.
+
+   The outcome fields on a review item say what HAPPENED. These say what the
+   player was looking at while it happened, and without them a review reopened
+   a week later can report that question 34 was wrong but cannot show question
+   34 - which is the half that teaches anything.
+
+   About 600 bytes a question, so a full SAT costs roughly 60KB on top of the
+   50KB a saved review already holds. Twelve of those is 1.3MB, comfortably
+   inside a browser's store; and saveReview already sheds the oldest and says so
+   if a particular browser disagrees. */
+function paperSnapshot(q) {
+  if (!q) return null;
+  return {
+    stem: q.stem || '',
+    passage: q.passage || null,
+    format: q.format || 'mc',
+    section: q.section || null,
+    domain: q.domain || null,
+    graphic: q.graphic || null,
+    answerIndex: typeof q.answerIndex === 'number' ? q.answerIndex : null,
+    /* Every option's reason, not just the one that was picked. A player
+       reviewing a question they got right is often asking why one of the
+       others was wrong, and that is exactly the reader this view is for. */
+    choices: (q.choices || []).map((c) => ({
+      letter: c.letter, text: c.text, why: c.why || null
+    }))
+  };
+}
+
+/* ------------------------------------------------------------------ pacing
+
+   What the per-question times add up to, in the terms a student can act on.
+
+   The single most common way to lose points on a timed test is not being
+   unable to do the questions - it is spending four minutes on one of them and
+   then guessing the last six. That failure is invisible in a score report and
+   completely visible in the times, which is the entire reason they are
+   recorded.
+
+   Everything here is computed on read from the items, so a saved review
+   reopened later reports exactly what it reported on the day. */
+
+/* Per-question pace the section allows, once five minutes is set aside for
+   directions and review. The same two numbers the question bank uses to set
+   its clock, kept in one place so they cannot drift apart. */
+const PACE_TARGET = { rw: 65.5, math: 88.6 };
+
+function pacing(items) {
+  const timed = (items || []).filter((i) => i && i.seconds > 0);
+  if (!timed.length) return null;
+
+  const bySection = {};
+  let total = 0;
+  for (const it of timed) {
+    total += it.seconds;
+    const k = it.section || 'unknown';
+    const e = bySection[k] || (bySection[k] = { section: k, seconds: 0, n: 0, right: 0 });
+    e.seconds += it.seconds; e.n++; if (it.right) e.right++;
+  }
+
+  /* Rushed and laboured are defined against the section's own allowance, not
+     against the player's own average - somebody who is slow on everything
+     would otherwise be told their pacing is even. */
+  const rushed = [], slow = [];
+  for (const it of timed) {
+    const target = PACE_TARGET[it.section] || 75;
+    if (it.seconds < target * 0.4) rushed.push(it);
+    if (it.seconds > target * 1.75) slow.push(it);
+  }
+
+  const acc = (list) => {
+    const answered = list.filter((i) => i.answered);
+    return answered.length ? answered.filter((i) => i.right).length / answered.length : null;
+  };
+
+  return {
+    questions: timed.length,
+    totalSeconds: Math.round(total),
+    meanSeconds: Math.round(total / timed.length * 10) / 10,
+    perSection: Object.keys(bySection).map((k) => {
+      const e = bySection[k];
+      return {
+        section: k, seconds: Math.round(e.seconds), questions: e.n,
+        mean: Math.round(e.seconds / e.n * 10) / 10,
+        target: PACE_TARGET[k] || null,
+        accuracy: e.n ? e.right / e.n : 0
+      };
+    }),
+    /* Counts and accuracies, not verdicts. Whether rushing cost this player
+       anything is something the numbers answer, and they do not always answer
+       yes - a strong student answering easy questions fast is not a problem. */
+    rushed: { count: rushed.length, accuracy: acc(rushed) },
+    slow: { count: slow.length, accuracy: acc(slow) },
+    steady: { count: timed.length - rushed.length - slow.length,
+              accuracy: acc(timed.filter((i) => rushed.indexOf(i) === -1 && slow.indexOf(i) === -1)) },
+    /* The longest few, so a report can point at the actual questions rather
+       than only describing the shape of the problem. */
+    longest: timed.slice().sort((a, b) => b.seconds - a.seconds).slice(0, 5)
+      .map((i) => ({ n: i.n, seconds: i.seconds, qtype: i.qtype, right: i.right }))
+  };
+}
+
 SATG.satUtil = {
+  paperSnapshot, pacing, PACE_TARGET,
   term, signed, signedTerm, reduceFraction, fmtFraction, fmtNumber, fmtMoney, fmtCount,
   parseNumeric, numericEquals,
   gridFits, gridCharsValid, gridForms, gridUsable, checkGrid,

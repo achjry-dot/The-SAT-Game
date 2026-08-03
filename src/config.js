@@ -132,8 +132,64 @@ SATG.CONFIG = {
      The `service_role` key on that same page is the exact opposite: it ignores
      every one of those policies. It must never go in this file, this repo, or
      anything a browser can download. */
-  supabaseUrl: '',
-  supabaseAnonKey: ''
+  supabaseUrl: 'https://kpwmbayxkhwwcjsmemsn.supabase.co',
+  supabaseAnonKey: 'sb_publishable_BrVqdCTwKUyTYPk-xx2Z0g_bcyJeWrT',
+
+  /* -------------------------------------------------------------- music
+
+     Every other sound in the game is built out of oscillators at runtime.
+     Music is the exception: write it, export it from your DAW, drop the file
+     in assets/music/, and name it here.
+
+       1. Export from the DAW to assets/music/
+       2. Put the path below, replacing ''
+       3. Reload
+
+     Leave a slot empty and that screen simply has no music, which is what
+     happens today.
+
+       menu     the title card and everything reached from it - SETTINGS,
+                STATS, FEEDBACK, the question-type picker
+       exam     under the room tone during the test. Empty on purpose: the
+                ambience and the ten-second cue were written to own that
+                space, so add one only if you decide otherwise
+       results  the score screen and the full analysis
+
+     A slot also accepts a LIST, tried in order until one plays. Useful if you
+     have not settled on a format:
+
+       menu: ['assets/music/menu.ogg', 'assets/music/menu.mp3']
+
+     ---- format, and the one trap ----
+
+     Use OGG or WAV for anything that loops.
+
+     MP3 cannot loop cleanly. The format pads the start and end of every file
+     with a few milliseconds of silence that the encoder adds and the decoder
+     cannot fully remove, so an MP3 loop ticks audibly once per pass. It is not
+     a bug in the game and no code here can fix it. OGG has no such padding;
+     WAV has none either but the files are roughly ten times the size.
+
+     OGG, WAV, MP3, M4A and FLAC all play in current Chrome, Firefox and Edge.
+     Safari has never supported OGG, so if Safari matters use WAV, or list both
+     with OGG first. */
+  music: {
+    tracks: {
+      menu: '',
+      exam: '',
+      results: ''
+    },
+
+    /* How loud the music sits under everything else, 0 to 1. This is on top of
+       the master volume in SETTINGS, not instead of it. Music is a bed, so it
+       wants to be well under the cues - the ding and the gunshot have to cut
+       through it without a fight. */
+    volume: 0.55,
+
+    /* Seconds to fade in and out when the screen changes. Long enough to feel
+       intentional, short enough that leaving the menu is not a wait. */
+    fade: 1.2
+  }
 };
 
 })(window);

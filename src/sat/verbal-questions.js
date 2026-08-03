@@ -226,10 +226,19 @@ function generateBoundaries(rng, diff) {
      very little of the day's accumulated heat" is correct English. Roughly a
      third of the questions this generator produced therefore had two right
      answers, and the student who picked the better one was marked wrong. */
+  /* Each carries the name of the error it commits. Derived from the same fact
+     that built it, so a reason can never describe a different option than the
+     one it is attached to. */
   const distractors = [
-    a + ', ' + b + '.',                       // comma splice
-    a + ' ' + b + '.',                        // fused / run-on sentence
-    a + '; ' + pair.conj + ' ' + b + '.'      // semicolon plus a coordinating conjunction
+    { v: a + ', ' + b + '.',
+      why: 'A comma splice. Both halves could stand alone as sentences, and a ' +
+           'comma is not strong enough to join two of those by itself.' },
+    { v: a + ' ' + b + '.',
+      why: 'A run-on. With no punctuation at all between them, nothing tells ' +
+           'the reader where the first complete idea ends and the second starts.' },
+    { v: a + '; ' + pair.conj + ' ' + b + '.',
+      why: 'The semicolon already joins the two clauses, so "' + pair.conj +
+           '" joins them a second time. Use one or the other, never both.' }
   ];
 
   return makeMC(rng, {
@@ -275,9 +284,16 @@ function generateAppositive(rng, diff) {
     stem: STEM_CONVENTIONS,
     correct,
     distractors: [
-      { v: it.subj + ', ' + it.app + ' - ' + it.rest + '.', why: 'Mismatched pair.' },
-      { v: it.subj + ', ' + it.app + ' ' + it.rest + '.', why: 'Opened but never closed.' },
-      { v: it.subj + ' ' + it.app + ', ' + it.rest + '.', why: 'Closed but never opened.' },
+      { v: it.subj + ', ' + it.app + ' - ' + it.rest + '.',
+        why: 'Opens with a comma and closes with a dash. The pair has to MATCH - ' +
+             'two commas, two dashes, or two parentheses - and mixing them is an error ' +
+             'even though each mark is fine on its own.' },
+      { v: it.subj + ', ' + it.app + ' ' + it.rest + '.',
+        why: 'Opens the interruption and never closes it, so the aside runs ' +
+             'straight into the rest of the sentence with no way out.' },
+      { v: it.subj + ' ' + it.app + ', ' + it.rest + '.',
+        why: 'Closes an interruption that was never opened. Nothing marks where ' +
+             '"' + it.app + '" began, so the reader has no signal it was an aside.' },
     ],
     explanation: 'Nonessential information must be enclosed by a matching pair of marks - ' +
                  'two commas, two dashes, or two parentheses. Mixing or omitting one is an error.'
@@ -315,15 +331,41 @@ function generateSubjectVerbAgreement(rng, diff) {
   const correct = it.plural ? it.plur : it.sing;
   const wrong = it.plural ? it.sing : it.plur;
 
+  /* Why any given wrong verb is wrong, worked out from the item rather than
+     written next to each option - there are eight items and six branches below,
+     and a hand-written reason per pairing is forty-odd chances to attach the
+     wrong sentence to the right option. */
+  const nearest = it.phrase.split(' ').pop().replace(/[^A-Za-z-]/g, '');
+  const number = it.plural ? 'plural' : 'singular';
+  const aspectWhy = (v) => {
+    if (/^to /.test(v)) {
+      return '"' + v + '" is an infinitive. It cannot be the main verb of a ' +
+             'sentence, so this leaves the clause with no verb at all.';
+    }
+    if (/ing$/.test(v)) {
+      return '"' + v + '" is a participle, not a finite verb. A main clause needs ' +
+             'a verb that carries tense, and a participle on its own does not.';
+    }
+    return '"' + v + '" does not agree with "' + it.subj.toLowerCase() +
+           '", which is ' + number + '.';
+  };
+
   // Three wrong choices: the proximity error plus two tense/aspect errors.
-  const distractors = [wrong];
-  if (correct === 'is')       distractors.push('were', 'being');
-  else if (correct === 'are') distractors.push('was', 'being');
-  else if (correct === 'has') distractors.push('have been', 'having');
-  else if (correct === 'have')distractors.push('has been', 'having');
-  else if (correct === 'were')distractors.push('is', 'being');
-  else if (correct === 'was') distractors.push('are', 'being');
-  else distractors.push(correct.replace(/s$/, '') + 'ing', 'to ' + correct.replace(/s$/, ''));
+  const raw = [];
+  if (correct === 'is')       raw.push('were', 'being');
+  else if (correct === 'are') raw.push('was', 'being');
+  else if (correct === 'has') raw.push('have been', 'having');
+  else if (correct === 'have')raw.push('has been', 'having');
+  else if (correct === 'were')raw.push('is', 'being');
+  else if (correct === 'was') raw.push('are', 'being');
+  else raw.push(correct.replace(/s$/, '') + 'ing', 'to ' + correct.replace(/s$/, ''));
+
+  const distractors = [{
+    v: wrong,
+    why: '"' + wrong + '" agrees with "' + nearest + '", the noun sitting closest ' +
+         'to the blank, instead of with the subject "' + it.subj.toLowerCase() +
+         '". That is the entire trap in this question type.'
+  }].concat(raw.map((v) => ({ v, why: aspectWhy(v) })));
 
   return makeMC(rng, {
     section: 'rw', domain: D_CONV, skill: 'form-structure-sense', qtype: 'rw-fss-subject-verb', difficulty: diff,
@@ -379,13 +421,64 @@ const PRONOUN_ITEMS = [
           'singular possessive is the only form that agrees.' }
 ];
 
+/* What each pronoun actually IS. Six items times three wrong options is
+   eighteen reasons; stating the facts once and deriving from them is both
+   shorter and impossible to get out of step with the options themselves. */
+const PRONOUN_FACTS = {
+  /* `refers` separates two pronouns that agree on everything else. "Its" and
+     "his" are both singular possessives, so number and role both match and
+     neither rule below fires - the only thing wrong with "his" next to a
+     telescope is what it can point at. */
+  'its':     { num: 'singular', kind: 'possessive', refers: 'a thing' },
+  'their':   { num: 'plural',   kind: 'possessive' },
+  'his':     { num: 'singular', kind: 'possessive', refers: 'a male person' },
+  'it':      { num: 'singular', kind: 'pronoun' },
+  'they':    { num: 'plural',   kind: 'subject pronoun' },
+  'them':    { num: 'plural',   kind: 'object pronoun' },
+  'this':    { num: 'singular', kind: 'demonstrative' },
+  'those':   { num: 'plural',   kind: 'demonstrative' },
+  "it's":    { contraction: 'it is' },
+  "they're": { contraction: 'they are' },
+  "who's":   { contraction: 'who is' },
+  'there':   { place: true }
+};
+
+function pronounWhy(correct, wrong) {
+  const w = PRONOUN_FACTS[wrong], c = PRONOUN_FACTS[correct];
+  if (!w) return null;
+  if (w.contraction) {
+    return '"' + wrong + '" is a contraction of "' + w.contraction + '". Read the ' +
+           'sentence back with the full words in place and it falls apart - this ' +
+           'slot needs a possessive, not a verb.';
+  }
+  if (w.place) {
+    return '"There" points at a place. It is not a possessive and it cannot refer ' +
+           'back to anything, which is what this blank has to do.';
+  }
+  if (c && c.num && w.num && c.num !== w.num) {
+    return '"' + wrong + '" is ' + w.num + ', and the thing it refers back to is ' +
+           c.num + '. A pronoun has to match its antecedent in number.';
+  }
+  if (c && c.refers && w.refers && c.refers !== w.refers) {
+    return '"' + wrong + '" refers to ' + w.refers + '. What this sentence points ' +
+           'back to is ' + c.refers + ', so the number is right but the pronoun ' +
+           'still cannot stand for it.';
+  }
+  if (c && c.kind && w.kind && c.kind !== w.kind) {
+    return '"' + wrong + '" is a ' + w.kind + ' where the sentence needs a ' +
+           c.kind + '. The number is right; the job it does in the sentence is not.';
+  }
+  return null;
+}
+
 function generatePronounAgreement(rng, diff) {
   const it = rng.pick(PRONOUN_ITEMS);
   return makeMC(rng, {
     section: 'rw', domain: D_CONV, skill: 'form-structure-sense', qtype: 'rw-fss-pronoun', difficulty: diff,
     passage: it.frame,
     stem: STEM_CONVENTIONS,
-    correct: it.correct, distractors: it.wrong.slice(),
+    correct: it.correct,
+    distractors: it.wrong.map((w) => ({ v: w, why: pronounWhy(it.correct, w) })),
     explanation: it.note
   });
 }
@@ -409,32 +502,79 @@ const POSSESSIVE_ITEMS = [
     note: '"Whose" is the possessive; "who\'s" is a contraction of "who is".' }
 ];
 
+/* Apostrophe errors fall into a handful of named shapes, and the shape can be
+   read off the two strings. Classifying beats annotating: the bank grows, and
+   an item added later gets its reasons for free rather than silently arriving
+   with none. */
+const CONTRACTIONS = { "it's": 'it is', "they're": 'they are', "who's": 'who is',
+                       'it is': 'it is', "there's": 'there is' };
+const PRONOUN_POSSESSIVES = ['its', 'their', 'theirs', 'whose', 'his', 'hers',
+                             'ours', 'yours'];
+
+function genitiveWhy(correct, wrong) {
+  if (CONTRACTIONS[wrong]) {
+    return '"' + wrong + '" means "' + CONTRACTIONS[wrong] + '". Say it back in full ' +
+           'and the sentence stops making sense - nothing is being contracted here, ' +
+           'something is being owned.';
+  }
+  if (wrong === 'there') {
+    return '"There" points at a place. It sounds identical and does a completely ' +
+           'different job.';
+  }
+  if (PRONOUN_POSSESSIVES.indexOf(correct) !== -1) {
+    if (/'/.test(wrong)) {
+      return '"' + wrong + '" puts an apostrophe on a possessive pronoun. Its, their, ' +
+             'whose, hers and ours are already possessive and never take one.';
+    }
+    return '"' + wrong + '" is not a form English has. The possessive here is "' +
+           correct + '".';
+  }
+  if (/s's$/.test(wrong)) {
+    return '"' + wrong + '" marks the possessive twice on a plural that already ends ' +
+           'in s. A plural ending in s takes the apostrophe on its own.';
+  }
+  if (/'s$/.test(wrong) && /s'$/.test(correct)) {
+    return '"' + wrong + '" is the SINGULAR possessive - one owner. The sentence is ' +
+           'about more than one, so the apostrophe goes after the s.';
+  }
+  if (/s'$/.test(wrong) && /'s$/.test(correct)) {
+    return '"' + wrong + '" is the PLURAL possessive - several owners. The sentence is ' +
+           'about one, so the apostrophe goes before the s.';
+  }
+  if (!/'/.test(wrong)) {
+    return '"' + wrong + '" has no apostrophe at all, so it is a plain plural. It says ' +
+           'there is more than one; it does not say anything belongs to them.';
+  }
+  return null;
+}
+
 function generatePossessive(rng, diff) {
   const it = rng.pick(POSSESSIVE_ITEMS);
   return makeMC(rng, {
     section: 'rw', domain: D_CONV, skill: 'form-structure-sense', qtype: 'rw-fss-genitive', difficulty: diff,
     passage: it.frame,
     stem: STEM_CONVENTIONS,
-    correct: it.correct, distractors: it.wrong,
+    correct: it.correct,
+    distractors: it.wrong.map((w) => ({ v: w, why: genitiveWhy(it.correct, w) })),
     explanation: it.note
   });
 }
 
 /* Dangling and misplaced modifiers. */
 const MODIFIER_ITEMS = [
-  { opener: 'Having been sealed for three centuries',
+  { opener: 'Having been sealed for three centuries', subj: 'the chamber',
     correct: 'the chamber contained air of a markedly different composition',
     wrong: ['researchers found the chamber\'s air markedly different',
             'the composition of the air was markedly different to researchers',
             'it was found that the air had a markedly different composition'],
     note: 'The opening phrase describes the chamber, so "the chamber" must be the subject of the main clause.' },
-  { opener: 'Trained to detect a single scent among hundreds',
+  { opener: 'Trained to detect a single scent among hundreds', subj: 'the dogs',
     correct: 'the dogs located the sample within minutes',
     wrong: ['the sample was located by the dogs within minutes',
             'it took the dogs only minutes to locate the sample',
             'locating the sample took the dogs only minutes'],
     note: 'The modifier describes the dogs, so "the dogs" must follow it directly as the subject.' },
-  { opener: 'Written entirely in the margins of a printed almanac',
+  { opener: 'Written entirely in the margins of a printed almanac', subj: 'the diary',
     correct: 'the diary escaped the attention of censors for years',
     wrong: ['censors overlooked the diary for years',
             'no censor noticed the diary for years',
@@ -448,7 +588,16 @@ function generateModifier(rng, diff) {
     section: 'rw', domain: D_CONV, skill: 'form-structure-sense', qtype: 'rw-fss-modifier', difficulty: diff,
     passage: it.opener + ', ______.',
     stem: STEM_CONVENTIONS,
-    correct: it.correct, distractors: it.wrong,
+    correct: it.correct,
+    /* One shape of error, three instances of it, so the reason is written once
+       against the fact that makes each of them wrong: whatever the choice puts
+       first is what the opening phrase ends up describing. */
+    distractors: it.wrong.map((w) => ({
+      v: w,
+      why: 'Read it straight through: "' + it.opener + ', ' + w + '". The opening ' +
+           'phrase describes ' + it.subj + ', but this choice does not put ' +
+           it.subj + ' first, so the phrase is left dangling.'
+    })),
     explanation: it.note + ' The other choices leave the opening phrase dangling, ' +
                  'attached to a subject it cannot logically describe.'
   });
@@ -458,17 +607,40 @@ function generateModifier(rng, diff) {
 const TENSE_ITEMS = [
   { frame: 'By the time the survey team arrived in 1974, the glacier ______ nearly a kilometre.',
     correct: 'had retreated', wrong: ['has retreated', 'retreats', 'will have retreated'],
+    signal: 'by the time the team arrived in 1974',
+    want: 'the past perfect, for an action finished before another past event',
     note: 'An action completed before another past event takes the past perfect.' },
   { frame: 'Since the restoration began in 2019, conservators ______ more than sixty panels.',
     correct: 'have treated', wrong: ['treated', 'had treated', 'will treat'],
+    signal: 'since 2019',
+    want: 'the present perfect, for something begun in the past and still going on',
     note: '"Since" with a period continuing into the present calls for the present perfect.' },
   { frame: 'Next spring the institute ______ a second expedition to the same valley.',
     correct: 'will send', wrong: ['sent', 'has sent', 'had sent'],
+    signal: 'next spring',
+    want: 'the simple future',
     note: 'A stated future time requires a future-tense verb.' },
   { frame: 'The kiln reached its peak temperature at dawn and ______ steadily for two days afterward.',
     correct: 'cooled', wrong: ['cools', 'has cooled', 'will cool'],
+    signal: 'reached ... at dawn',
+    want: 'the simple past, matching the verb it is paired with',
     note: 'The two verbs describe the same completed past sequence, so both must be simple past.' }
 ];
+
+/* Naming the tense a wrong choice actually is turns "that is not it" into
+   something a student can use twice. Keyed on the exact strings above, so a
+   new item that forgets to list its forms gets no reason rather than a wrong
+   one - which the coverage sweep then reports. */
+const TENSE_NAMES = {
+  'retreats': 'the simple present', 'has retreated': 'the present perfect',
+  'will have retreated': 'the future perfect',
+  'treated': 'the simple past', 'had treated': 'the past perfect',
+  'will treat': 'the simple future',
+  'sent': 'the simple past', 'has sent': 'the present perfect',
+  'had sent': 'the past perfect',
+  'cools': 'the simple present', 'has cooled': 'the present perfect',
+  'will cool': 'the simple future'
+};
 
 function generateTense(rng, diff) {
   const it = rng.pick(TENSE_ITEMS);
@@ -476,7 +648,14 @@ function generateTense(rng, diff) {
     section: 'rw', domain: D_CONV, skill: 'form-structure-sense', qtype: 'rw-fss-verb-tense', difficulty: diff,
     passage: it.frame,
     stem: STEM_CONVENTIONS,
-    correct: it.correct, distractors: it.wrong,
+    correct: it.correct,
+    distractors: it.wrong.map((w) => ({
+      v: w,
+      why: TENSE_NAMES[w]
+        ? '"' + w + '" is ' + TENSE_NAMES[w] + '. The time signal in the sentence - ' +
+          '"' + it.signal + '" - calls for ' + it.want + '.'
+        : null
+    })),
     explanation: it.note
   });
 }
@@ -487,55 +666,182 @@ function generateTense(rng, diff) {
    a related-but-wrong sense, and a common confusable.
    ========================================================================= */
 
+/* Every wrong option carries the reason it fails.
+
+   These cannot be derived the way the Conventions reasons are. A grammar error
+   has a name; a wrong word is wrong because of what the surrounding sentence
+   means, and the only honest way to say so is to say so. Each one names the
+   signal in the frame that rules the option out, because "it does not fit" is
+   something a student already knew before they got it wrong. */
 const VOCAB_ITEMS = [
   { frame: 'Although the theory was initially dismissed, decades of subsequent evidence have ______ its central claim.',
-    correct: 'corroborated', wrong: ['fabricated', 'complicated', 'tolerated'] },
+    correct: 'corroborated',
+    wrong: [
+      { v: 'fabricated', why: 'Fabricated means invented or made up. That would make the evidence dishonest, where the contrast with "initially dismissed" needs it to have supported the claim.' },
+      { v: 'complicated', why: 'Complicated means made more difficult. The sentence turns on the theory being vindicated over decades, not muddied.' },
+      { v: 'tolerated', why: 'Tolerated means put up with. Evidence does not put up with a claim - the contrast with "dismissed" calls for active support.' }
+    ] },
   { frame: 'The report is deliberately ______: it states the findings plainly and offers no interpretation whatsoever.',
-    correct: 'austere', wrong: ['ornate', 'evasive', 'exhaustive'] },
+    correct: 'austere',
+    wrong: [
+      { v: 'ornate', why: 'Ornate means heavily decorated, which is the opposite of the plainness the colon goes on to describe.' },
+      { v: 'evasive', why: 'Evasive means dodging the point. Withholding interpretation is not the same as avoiding the subject - the findings are stated plainly.' },
+      { v: 'exhaustive', why: 'Exhaustive means covering everything. The sentence is about how little the report adds, not how much ground it covers.' }
+    ] },
   { frame: 'Far from being uniform, the sediment layers proved remarkably ______, varying in composition every few centimetres.',
-    correct: 'heterogeneous', wrong: ['homogeneous', 'permeable', 'sedimentary'] },
+    correct: 'heterogeneous',
+    wrong: [
+      { v: 'homogeneous', why: 'Homogeneous means uniform throughout, which "Far from being uniform" rules out. This is the trap: the two words differ by one prefix and mean opposite things.' },
+      { v: 'permeable', why: 'Permeable means letting liquid through. True of many sediments, and unrelated to whether their composition varies.' },
+      { v: 'sedimentary', why: 'Sedimentary only repeats that these are sediment layers. It says nothing about variation, which is what the rest of the sentence is about.' }
+    ] },
   { frame: 'The committee\'s support was ______ rather than wholehearted; several members signed only after long hesitation.',
-    correct: 'tepid', wrong: ['fervent', 'unanimous', 'hostile'] },
+    correct: 'tepid',
+    wrong: [
+      { v: 'fervent', why: 'Fervent means intense and passionate, which is what "rather than wholehearted" explicitly rules out.' },
+      { v: 'unanimous', why: 'Unanimous describes how many agreed, not how strongly. They all did sign, so the count is not what the sentence is measuring.' },
+      { v: 'hostile', why: 'Hostile overshoots. They signed, however reluctantly, and hostile support is a contradiction.' }
+    ] },
   { frame: 'Her prose is ______, conveying in a single clause what other writers labour over for a paragraph.',
-    correct: 'economical', wrong: ['verbose', 'affordable', 'ambiguous'] },
+    correct: 'economical',
+    wrong: [
+      { v: 'verbose', why: 'Verbose means using too many words, the opposite of saying in one clause what others take a paragraph over.' },
+      { v: 'affordable', why: 'This is the money sense of "economical". The sentence is about her prose, not its price - the right word has two senses and only one of them fits.' },
+      { v: 'ambiguous', why: 'Ambiguous means open to more than one reading. Brevity and vagueness are different things, and nothing here says she is unclear.' }
+    ] },
   { frame: 'The artist rejected the label entirely, insisting that her work ______ any single tradition.',
-    correct: 'transcends', wrong: ['imitates', 'establishes', 'descends'] },
+    correct: 'transcends',
+    wrong: [
+      { v: 'imitates', why: 'Imitates means copies. She rejected the label, so her work goes beyond a tradition rather than following one.' },
+      { v: 'establishes', why: 'Establishes means founds or sets up. That would tie her work to a single tradition, which is exactly what she is denying.' },
+      { v: 'descends', why: 'Descends looks close to "transcends" and points the other way: it means comes down from, which is again a claim of belonging.' }
+    ] },
   { frame: 'Because the samples had been stored improperly, the results of the earlier analysis are now considered ______.',
-    correct: 'unreliable', wrong: ['definitive', 'unavailable', 'unpopular'] },
+    correct: 'unreliable',
+    wrong: [
+      { v: 'definitive', why: 'Definitive means settled beyond doubt. Improper storage undermines results; it cannot confirm them.' },
+      { v: 'unavailable', why: 'Unavailable means not obtainable. The results exist and can be read - the question is whether they can be trusted.' },
+      { v: 'unpopular', why: 'Unpopular is about how people feel. A storage failure affects accuracy, not reception.' }
+    ] },
   { frame: 'The compound remains ______ at room temperature, decomposing only when heated past 400 degrees.',
-    correct: 'stable', wrong: ['volatile', 'soluble', 'abundant'] },
+    correct: 'stable',
+    wrong: [
+      { v: 'volatile', why: 'Volatile means readily evaporating or unstable, the opposite of a compound that holds together until 400 degrees.' },
+      { v: 'soluble', why: 'Soluble means dissolving in a liquid. The sentence is about heat, not solution.' },
+      { v: 'abundant', why: 'Abundant means plentiful. How much of it exists has nothing to do with whether it decomposes.' }
+    ] },
   { frame: 'Rather than settling the debate, the new data ______ it, raising questions no one had thought to ask.',
-    correct: 'reinvigorated', wrong: ['resolved', 'summarised', 'abandoned'] },
+    correct: 'reinvigorated',
+    wrong: [
+      { v: 'resolved', why: 'Resolved means settled, which "Rather than settling the debate" rules out in the same sentence.' },
+      { v: 'summarised', why: 'Summarised means restated briefly. Raising questions nobody had asked is the opposite of condensing what was already there.' },
+      { v: 'abandoned', why: 'Abandoned means gave up on. The debate is still running - new questions are what keep it alive.' }
+    ] },
   { frame: 'The building\'s design is unapologetically ______, borrowing freely from four centuries of architecture.',
-    correct: 'eclectic', wrong: ['austere', 'derivative', 'symmetrical'] },
+    correct: 'eclectic',
+    wrong: [
+      { v: 'austere', why: 'Austere means plain and unadorned. Borrowing freely from four centuries is the opposite of restraint.' },
+      { v: 'derivative', why: 'Derivative means unoriginal, leaning on one source. Drawing deliberately on many is not the same failing, and "unapologetically" marks this as a choice.' },
+      { v: 'symmetrical', why: 'Symmetrical describes balance in shape. It says nothing about where the design takes its ideas from.' }
+    ] },
   { frame: 'His account of the expedition is valuable precisely because it is so ______, recording failures alongside successes.',
-    correct: 'candid', wrong: ['flattering', 'concise', 'technical'] },
+    correct: 'candid',
+    wrong: [
+      { v: 'flattering', why: 'Flattering means making something look better than it was, which "recording failures alongside successes" rules out.' },
+      { v: 'concise', why: 'Concise means short. The sentence praises what he puts in, not how briefly he says it.' },
+      { v: 'technical', why: 'Technical means specialised in detail. Recording failures is a matter of honesty, not vocabulary.' }
+    ] },
   { frame: 'The population decline was not sudden but ______, unfolding over nearly two hundred years.',
-    correct: 'gradual', wrong: ['abrupt', 'severe', 'reversible'] },
+    correct: 'gradual',
+    wrong: [
+      { v: 'abrupt', why: 'Abrupt means sudden, and "not sudden but" rules it out four words earlier.' },
+      { v: 'severe', why: 'Severe describes how bad the decline was, not how fast. "Over nearly two hundred years" is about pace.' },
+      { v: 'reversible', why: 'Reversible means able to be undone. Nothing in the sentence is about whether the population recovered.' }
+    ] },
   { frame: 'Critics found the argument ______: it assumed at the outset the very conclusion it claimed to prove.',
-    correct: 'circular', wrong: ['persuasive', 'lengthy', 'original'] },
+    correct: 'circular',
+    wrong: [
+      { v: 'persuasive', why: 'Persuasive means convincing. Critics are objecting, and the colon explains why the argument fails.' },
+      { v: 'lengthy', why: 'Lengthy means long. The complaint is about the shape of the argument, not its size.' },
+      { v: 'original', why: 'Original means new. Assuming your own conclusion is a very old mistake, and the colon describes a flaw rather than a virtue.' }
+    ] },
   { frame: 'The treaty\'s language is intentionally ______, allowing each signatory to interpret its terms favourably.',
-    correct: 'ambiguous', wrong: ['precise', 'archaic', 'binding'] },
+    correct: 'ambiguous',
+    wrong: [
+      { v: 'precise', why: 'Precise means exact, the opposite of language each signatory can read in its own favour.' },
+      { v: 'archaic', why: 'Archaic means old-fashioned. Old wording is not the same as wording open to several readings.' },
+      { v: 'binding', why: 'Binding means legally enforceable. Whether it binds is a separate question from whether its terms are clear.' }
+    ] },
   { frame: 'Once ______ across the entire continent, the species now survives in three isolated valleys.',
-    correct: 'ubiquitous', wrong: ['endangered', 'nocturnal', 'introduced'] },
+    correct: 'ubiquitous',
+    wrong: [
+      { v: 'endangered', why: 'Endangered describes the species now, not then. "Once" sets up a contrast with the three isolated valleys that follow.' },
+      { v: 'nocturnal', why: 'Nocturnal means active at night. It says nothing about how widespread the species was.' },
+      { v: 'introduced', why: 'Introduced means brought in from elsewhere. The sentence is about range, not origin.' }
+    ] },
   { frame: 'The editor\'s changes were largely ______, correcting spelling without altering the argument.',
-    correct: 'superficial', wrong: ['substantive', 'careless', 'controversial'] },
+    correct: 'superficial',
+    wrong: [
+      { v: 'substantive', why: 'Substantive means affecting the substance, which "without altering the argument" rules out directly.' },
+      { v: 'careless', why: 'Careless means done badly. Correcting spelling is careful work; it is simply not deep work.' },
+      { v: 'controversial', why: 'Controversial means disputed. Nobody in the sentence is objecting to anything.' }
+    ] },
   { frame: 'Given how little of the structure survives, any reconstruction must remain ______.',
-    correct: 'conjectural', wrong: ['authoritative', 'expensive', 'permanent'] },
+    correct: 'conjectural',
+    wrong: [
+      { v: 'authoritative', why: 'Authoritative means commanding confidence, which is more than "how little of the structure survives" will support.' },
+      { v: 'expensive', why: 'Expensive is about cost. The sentence is about how much can be known, not what finding out would cost.' },
+      { v: 'permanent', why: 'Permanent means lasting. How durable a reconstruction is has nothing to do with how much evidence stands behind it.' }
+    ] },
   { frame: 'The two accounts are not merely different but ______: if one is accurate, the other cannot be.',
-    correct: 'incompatible', wrong: ['complementary', 'comparable', 'inconsistent'] },
+    correct: 'incompatible',
+    wrong: [
+      { v: 'complementary', why: 'Complementary means fitting together to complete each other, the opposite of two accounts that cannot both be true.' },
+      { v: 'comparable', why: 'Comparable means similar enough to set side by side. The sentence starts from their being different and then goes further.' },
+      { v: 'inconsistent', why: 'This is the near miss. Inconsistent accounts disagree in places; the colon says that if one is right the other cannot be at all, which is stronger.' }
+    ] },
   { frame: 'The instrument is sensitive enough to detect ______ shifts that earlier equipment would have missed entirely.',
-    correct: 'minute', wrong: ['immense', 'gradual', 'temporary'] },
+    correct: 'minute',
+    wrong: [
+      { v: 'immense', why: 'Immense means huge. Equipment sensitive enough to catch what others missed is picking up something small.' },
+      { v: 'gradual', why: 'Gradual describes how slowly a shift happens, not how small it is. A slow change can be enormous.' },
+      { v: 'temporary', why: 'Temporary describes how long a shift lasts. Duration is not size.' }
+    ] },
   { frame: 'Her influence on the field is difficult to ______, since so much later work simply assumes her framework.',
-    correct: 'overstate', wrong: ['establish', 'understand', 'appreciate'] },
+    correct: 'overstate',
+    wrong: [
+      { v: 'establish', why: 'Establish means to prove. Her influence is not in doubt here - the sentence is about its scale.' },
+      { v: 'understand', why: 'That would say her influence is hard to grasp, but the clause after "since" is a reason it is very large.' },
+      { v: 'appreciate', why: 'Appreciate means to recognise the value of. Later work assuming her framework makes her influence easier to see, not harder.' }
+    ] },
   { frame: 'The colony persists in conditions that would prove ______ to almost any other organism.',
-    correct: 'lethal', wrong: ['agreeable', 'temporary', 'unfamiliar'] },
+    correct: 'lethal',
+    wrong: [
+      { v: 'agreeable', why: 'Agreeable means pleasant. The sentence contrasts this colony with organisms that could not manage there at all.' },
+      { v: 'temporary', why: 'Temporary describes how long conditions last, not what they do to an organism.' },
+      { v: 'unfamiliar', why: 'Unfamiliar only means unknown. Persisting where others could not needs a stronger word than "strange".' }
+    ] },
   { frame: 'What appears at first to be decorative is in fact ______: every mark records a measurement.',
-    correct: 'functional', wrong: ['ornamental', 'illegible', 'accidental'] },
+    correct: 'functional',
+    wrong: [
+      { v: 'ornamental', why: 'Ornamental means decorative, which is precisely the thing the sentence says it only appears to be.' },
+      { v: 'illegible', why: 'Illegible means unreadable. The marks record measurements, so they can be read.' },
+      { v: 'accidental', why: 'Accidental means unintended, but the colon says every mark records something, which is deliberate.' }
+    ] },
   { frame: 'The author is careful to ______ her claim, noting that it applies only to the earliest period.',
-    correct: 'qualify', wrong: ['abandon', 'exaggerate', 'restate'] },
+    correct: 'qualify',
+    wrong: [
+      { v: 'abandon', why: 'Abandon means to drop entirely. She keeps the claim and narrows where it applies.' },
+      { v: 'exaggerate', why: 'Exaggerate means to overstate. Limiting a claim to one period does the opposite.' },
+      { v: 'restate', why: 'Restate means to say again. Adding a limit changes the claim rather than repeating it.' }
+    ] },
   { frame: 'Rather than a single catastrophe, the collapse was the ______ result of many small failures.',
-    correct: 'cumulative', wrong: ['immediate', 'accidental', 'predictable'] }
+    correct: 'cumulative',
+    wrong: [
+      { v: 'immediate', why: 'Immediate means happening at once, which "Rather than a single catastrophe" rules out.' },
+      { v: 'accidental', why: 'Accidental means unintended. Each failure may well have been, but the sentence is about how they added up.' },
+      { v: 'predictable', why: 'Predictable means foreseeable. Whether anyone saw it coming is a different matter from many small failures accumulating.' }
+    ] }
 ];
 
 function generateWordsInContext(rng, diff) {
@@ -680,7 +986,8 @@ function generateSynthesis(rng, diff) {
     passage: 'While researching a topic, a student has taken the following notes:\n\n' + notes,
     stem: 'The student wants to ' + g.goal + '. Which choice most effectively uses ' +
           'relevant information from the notes to accomplish this goal?',
-    correct: g.correct, distractors: g.wrong.slice(),
+    correct: g.correct,
+    distractors: g.wrong.map((w) => ({ v: w, why: comprehensionWhy('rhetorical-synthesis') })),
     explanation: 'Only this choice uses the notes that bear on the stated goal. ' +
                  'The others cite accurate facts that do not serve it.'
   });
@@ -1089,11 +1396,65 @@ function generateComprehension(rng, diff, pool) {
     stem: p.underline
       ? p.stem + '\n(The sentence in question is marked >> like this <<.)'
       : p.stem,
-    correct: p.correct, distractors: p.wrong.slice(),
+    correct: p.correct,
+    distractors: p.wrong.map((w) => ({ v: w, why: comprehensionWhy(p.skill) })),
     explanation: p.explanation ||
       'The correct choice is the one the text actually supports, at the level of ' +
       'generality the question asks for.'
   });
+}
+
+/* Why a wrong comprehension choice is wrong.
+
+   This one is per SKILL, not per option, and that is a real difference from
+   everything else in this file. A grammar distractor commits a named error and
+   a wrong vocabulary word clashes with a stated signal - both can be pinned
+   exactly. A wrong reading-comprehension option is wrong because of what a
+   whole paragraph means, and there is no rule that derives that.
+
+   So this says the next most useful true thing: the failure mode this question
+   type is built around. Every wrong option on a central-idea question really is
+   too narrow, too broad, or unsupported, and telling a student which three
+   things to check is worth considerably more than a blank panel. Where a
+   passage carries its own explanation, that is shown alongside this.
+
+   If these are ever replaced with per-option reasons, the coverage sweep will
+   not notice - it only counts whether a reason exists. Judge them by reading
+   them, not by the percentage. */
+const COMPREHENSION_WHY = {
+  'central-ideas':
+    'Main-idea options fail in three ways: too narrow (true of one sentence but not the text), ' +
+    'too broad (a general claim the text never quite makes), or unsupported. Check this one ' +
+    'against the WHOLE passage - if any part of the text is not covered by it, it is not the main idea.',
+  'inferences':
+    'An inference has to follow from the text and go no further. This option either adds ' +
+    'something the passage never establishes, or reverses a relationship it does state. Ask what ' +
+    'sentence would have to be true for this to hold, then look for that sentence.',
+  'command-of-evidence':
+    'The question is not which statement is true but which one WOULD SUPPORT the claim. ' +
+    'An option can be perfectly accurate and still support nothing. Ask whether this makes the ' +
+    'specific claim in the stem more likely, or merely sits next to it.',
+  'command-of-evidence-quant':
+    'Data options fail by reading the wrong row or column, by describing a real number that is ' +
+    'irrelevant to the claim, or by stating a trend the figures do not show. Go back to the ' +
+    'table and find the exact numbers this sentence would need.',
+  'text-structure':
+    'This describes a job the sentence does not do. Read the sentence before it and the sentence ' +
+    'after: a function claim has to fit what actually surrounds it, not what the sentence says ' +
+    'in isolation.',
+  'cross-text':
+    'The trap here is answering from one text. This option either overstates the disagreement, ' +
+    'understates it, or attributes to the second author a position the second text never takes. ' +
+    'Find the line in Text 2 that would have to exist for this to be right.',
+  'rhetorical-synthesis':
+    'The goal stated in the question decides everything. This option may use the notes accurately ' +
+    'and still not serve that goal - or it may bring in a bullet the goal does not call for. ' +
+    'Reread the goal, then check this sentence against it word for word.'
+};
+
+function comprehensionWhy(skill) {
+  return COMPREHENSION_WHY[skill] ||
+    'Check this against what the text actually states, at the level of generality the question asks for.';
 }
 
 /* =========================================================== registry

@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>THE SAT GAME - compatibility report</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;padding:22px;background:#0b0b0a;color:#cfc8bd;
+       font:13px/1.55 "Consolas","DejaVu Sans Mono","Courier New",monospace}
+  h1{font-size:17px;letter-spacing:3px;margin:0 0 4px}
+  h2{font-size:13px;letter-spacing:2px;margin:22px 0 6px;color:#8dffab}
+  .sub{color:#7a7266;margin:0 0 18px}
+  pre{white-space:pre-wrap;word-break:break-word;margin:0}
+  .ok{color:#8dffab}.bad{color:#ff8f7a}.warn{color:#ffd479}.dim{color:#7a7266}
+  button{font:inherit;background:#1c2a20;color:#8dffab;border:1px solid #2f5c3c;
+         padding:8px 16px;cursor:pointer;margin:16px 8px 0 0}
+  button:hover{background:#24382b}
+  #out{border:1px solid #262521;padding:16px;background:#111110;margin-top:10px}
+  canvas{border:1px solid #262521;background:#000;image-rendering:pixelated;
+         vertical-align:top;margin:6px 10px 0 0}
+  .row{display:flex;flex-wrap:wrap;align-items:flex-start}
+  .cap{color:#7a7266;font-size:11px}
+</style>
+</head>
+<body>
+
+<h1>THE SAT GAME &mdash; COMPATIBILITY REPORT</h1>
+<p class="sub">Runs entirely on your machine. Nothing is uploaded anywhere.
+Press <b>Run all checks</b>, wait for it to finish, then <b>Copy report</b> and paste it back.</p>
+
+<div>
+  <button id="run">Run all checks</button>
+  <button id="copy">Copy report</button>
+</div>
+
+<h2>VISUAL CHECK</h2>
+<p class="sub">These should look like crisp pixel art. If the text is blank, blurry,
+smeared, or made of solid blocks, say so &mdash; that is a finding in itself.</p>
+<div class="row">
+  <div><canvas id="cvFont" width="360" height="90"></canvas><div class="cap">bitmap text</div></div>
+  <div><canvas id="cvGl" width="240" height="90"></canvas><div class="cap">webgl2 + texture upload</div></div>
+</div>
+
+<h2>LIVE CORRUPTION TEST</h2>
+<p class="sub">This is the exact thing the game does: an 800&times;1120 sheet, redrawn and
+re-uploaded whenever its contents change, then drawn as a textured quad.
+It cycles the highlighted answer A&rarr;B&rarr;C&rarr;D, which is precisely when you
+said the glitch appears. <b>Watch it for 20&ndash;30 seconds.</b></p>
+<div class="row">
+  <div><canvas id="cvRepro" width="420" height="300"></canvas>
+       <div class="cap">left: the sheet &mdash; right: colour probes</div></div>
+  <div style="flex:1;min-width:260px">
+    <div id="reproStat" class="dim">idle</div>
+    <button id="reproGo">Start / stop the corruption test</button>
+    <p class="cap" style="max-width:34em">
+      The counter reports what the GPU actually contains, checked every frame.
+      <b>If the counter stays at 0 but you can SEE the sheet tearing, flickering or
+      showing black blocks, that is the finding</b> &mdash; it means the pixels are
+      correct and the fault is in how your browser puts them on screen, which is a
+      completely different bug from the one I have been chasing.
+    </p>
+  </div>
+</div>
+
+<h2>REPORT</h2>
+<div id="out"><pre id="log" class="dim">Not run yet.</pre></div>
+
+<!-- The game's own font path, so the report tests what actually ships rather
+     than a re-implementation of it. -->
+<script src="src/core/util.js"></script>
+<script src="src/core/gl.js"></script>
+<script src="src/core/font-data.js"></script>
+<script src="src/core/font.js"></script>
+<script>
+(function () {
+'use strict';
+
+const lines = [];
+const logEl = document.getElementById('log');
+const put = (s, cls) => {
+  lines.push(s);
+  const span = document.createElement('span');
+  span.className = cls || '';
+  span.textContent = s + '\n';
+  logEl.appendChild(span);
+};
+const head = (s) => put('\n=== ' + s + ' ===');
+const kv = (k, v, cls) => put('  ' + (k + ':').padEnd(26) + v, cls);
+
+/* ------------------------------------------------------------ 1. platform */
+
+function checkPlatform() {
+  head('PLATFORM');
+  kv('build on disk', (window.SATG && window.SATG.BUILD) || 'MISSING - util.js did not load',
+     (window.SATG && window.SATG.BUILD) ? 'ok' : 'bad');
+  kv('userAgent', navigator.userAgent);
+  const ua = navigator.userAgent;
+  const engine = /Firefox|Gecko\/|Zen/i.test(ua) && !/Chrome/.test(ua) ? 'Gecko (Firefox family)'
+               : /Chrome|Chromium|Edg/.test(ua) ? 'Blink (Chrome family)'
+               : /Safari/.test(ua) ? 'WebKit (Safari)' : 'unknown';
+  kv('engine', engine);
+  /* Display scaling. A fractional ratio means the browser resamples the
+     game's backing store onto the physical screen with uneven pixel widths,
+     which eats one-pixel font strokes and reads as corruption. The game now
+     renders at the device ratio so the final blit is 1:1 - this line records
+     what that ratio actually is on this machine. */
+  const dpr = window.devicePixelRatio || 1;
+  const frac = Math.abs(dpr - Math.round(dpr)) > 1e-6;
+  kv('devicePixelRatio', String(dpr) + (frac ? '  (fractional - e.g. Windows at 125% / 150%)' : ''),
+     frac ? 'warn' : 'ok');
+  kv('OS display scaling', Math.round(dpr * 100) + '%');
+  kv('window', window.innerWidth + ' x ' + window.innerHeight);
+  kv('screen', screen.width + ' x ' + screen.height);
+  kv('cores', String(navigator.hardwareConcurrency || 'n/a'));
+  kv('page origin', location.protocol);
+}
+
+/* ------------------------------------- 2. canvas readback (RFP detection)
+   The font is built by rasterising glyphs and reading the pixels back. If the
+   browser's fingerprint protection perturbs canvas reads, that step silently
+   produces garbage - so this is checked before anything that depends on it. */
+
+function checkCanvasReadback() {
+  head('CANVAS 2D READBACK');
+  const cv = document.createElement('canvas');
+  cv.width = 64; cv.height = 64;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+
+  const swatches = [[255,0,0],[0,255,0],[0,0,255],[128,64,32],[255,255,255],[0,0,0]];
+  swatches.forEach((c, i) => {
+    ctx.fillStyle = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+    ctx.fillRect(i * 10, 0, 10, 10);
+  });
+
+  let worst = 0, exact = true;
+  try {
+    const d = ctx.getImageData(0, 0, 64, 64).data;
+    swatches.forEach((c, i) => {
+      const o = ((5) * 64 + (i * 10 + 5)) * 4;
+      for (let k = 0; k < 3; k++) {
+        const diff = Math.abs(d[o + k] - c[k]);
+        if (diff > worst) worst = diff;
+        if (diff > 1) exact = false;
+      }
+    });
+  } catch (e) {
+    kv('getImageData', 'THREW: ' + e.message, 'bad');
+    return false;
+  }
+
+  kv('max channel error', String(worst), exact ? 'ok' : 'bad');
+  if (exact) {
+    kv('verdict', 'clean - readback is trustworthy', 'ok');
+  } else {
+    kv('verdict', 'PERTURBED - fingerprint protection is altering canvas pixels', 'bad');
+    put('  >> This breaks the bitmap font, which is built by reading pixels back.', 'bad');
+    put('  >> In Firefox/Zen this is privacy.resistFingerprinting or a strict', 'bad');
+    put('  >> anti-fingerprinting mode. Worth reporting back.', 'bad');
+  }
+  return exact;
+}
+
+/* --------------------------------------------------------- 3. font pipeline */
+
+/* Exercises the game's real font path, not a re-implementation of it. The
+   atlas ships baked (font-data.js), so this should be identical on every
+   browser - that is the whole point, and any deviation is a finding. */
+const EXPECTED_INK = 2672;
+
+function checkFont() {
+  head('FONT');
+  if (!window.SATG || !window.SATG.font) {
+    kv('font module', 'MISSING - src/core/font.js did not load', 'bad');
+    return;
+  }
+  kv('baked atlas present', window.SATG.FONT_DATA ? 'yes' : 'NO - will fall back to system font',
+     window.SATG.FONT_DATA ? 'ok' : 'bad');
+
+  let s;
+  try { s = window.SATG.font.init(); }
+  catch (e) { kv('font.init()', 'THREW: ' + e.message, 'bad'); return; }
+
+  kv('cell size', s.cellW + ' x ' + s.cellH);
+  kv('atlas', s.mask.width + ' x ' + s.mask.height);
+  kv('measure("HELLO")', String(window.SATG.font.measure('HELLO', 1, 0)));
+
+  /* Payload integrity. The ink count is reported but NOT trusted on its own:
+     a shifted payload keeps the ink and moves it, which is precisely how a
+     scrambled atlas once passed review. The checksum is the real test. */
+  const D = window.SATG.FONT_DATA;
+  let ink = 0, readable = true;
+  try {
+    const d = s.mask.getContext('2d').getImageData(0, 0, s.mask.width, s.mask.height).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) ink++;
+  } catch (e) { readable = false; }
+  kv('ink pixels', readable ? ink + '  (expected ' + EXPECTED_INK + ')'
+                            : 'could not read back (blocked)',
+     !readable ? 'warn' : ink === EXPECTED_INK ? 'ok' : 'warn');
+
+  if (D && D.bits) {
+    try {
+      const bin = atob(D.bits);
+      let hash = 0x811c9dc5;
+      for (let i = 0; i < bin.length; i++) {
+        hash ^= bin.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+      }
+      const lenOk = bin.length === (D.bytes || -1);
+      const sumOk = D.checksum === undefined || hash === (D.checksum >>> 0);
+      kv('payload bytes', bin.length + (lenOk ? '' : '  EXPECTED ' + D.bytes),
+         lenOk ? 'ok' : 'bad');
+      kv('payload checksum', '0x' + hash.toString(16) +
+         (sumOk ? '' : '  EXPECTED 0x' + (D.checksum >>> 0).toString(16)),
+         sumOk ? 'ok' : 'bad');
+      if (!lenOk || !sumOk) {
+        put('  >> The glyph atlas has been altered. Every letter will be the', 'bad');
+        put('  >> wrong letter, cleanly drawn. Regenerate src/core/font-data.js.', 'bad');
+      }
+    } catch (e) {
+      kv('payload', 'failed to decode: ' + e.message, 'bad');
+    }
+  }
+
+  /* Read the text back. Draw a known string, then identify each glyph by
+     matching its bitmap against the atlas. This is the check that a shifted
+     payload cannot survive, and the one that should have existed already. */
+  try {
+    const cw = s.cellW, ch = s.cellH, cols = s.cols;
+    const probe = document.createElement('canvas');
+    probe.width = cw * 24; probe.height = ch + 4;
+    const pc = probe.getContext('2d', { willReadFrequently: true });
+    const SRC = 'THE SAT GAME';
+    window.SATG.font.draw(pc, SRC, 0, 2, { color: '#ffffff', scale: 1, tracking: 0 });
+    const pix = pc.getImageData(0, 0, probe.width, probe.height).data;
+    const atlas = s.mask.getContext('2d').getImageData(0, 0, s.mask.width, s.mask.height).data;
+
+    let decoded = '';
+    for (let n = 0; n < SRC.length; n++) {
+      let best = '?', bestScore = -1;
+      for (const key of Object.keys(s.index)) {
+        const i = s.index[key];
+        const ax = (i % cols) * cw, ay = Math.floor(i / cols) * ch;
+        let same = 0;
+        for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+          const p = (((y + 2) * probe.width) + (n * cw + x)) * 4 + 3;
+          const a = (((ay + y) * s.mask.width) + (ax + x)) * 4 + 3;
+          if (((pix[p] > 0) ? 1 : 0) === ((atlas[a] > 0) ? 1 : 0)) same++;
+        }
+        if (same > bestScore) { bestScore = same; best = key; }
+      }
+      decoded += best;
+    }
+    kv('text reads back as', '"' + decoded + '"  (drew "' + SRC + '")',
+       decoded === SRC ? 'ok' : 'bad');
+    if (decoded !== SRC) {
+      put('  >> The atlas is drawing the WRONG GLYPH for each character.', 'bad');
+    }
+  } catch (e) {
+    kv('read-back test', 'could not run: ' + e.message, 'warn');
+  }
+
+  // Draw real text through the game's own draw path so it can be eyeballed.
+  const show = document.getElementById('cvFont');
+  const sctx = show.getContext('2d');
+  sctx.imageSmoothingEnabled = false;
+  sctx.clearRect(0, 0, show.width, show.height);
+  try {
+    window.SATG.font.draw(sctx, 'THE SAT GAME', 8, 8, { color: '#cfc8bd', scale: 2, tracking: 1 });
+    window.SATG.font.draw(sctx, 'abcdefg 0123456789', 8, 40, { color: '#8dffab', scale: 1 });
+    window.SATG.font.draw(sctx, '(x-3)^2 = 49  A B C D', 8, 60, { color: '#ffd479', scale: 1 });
+    kv('sample rendered', 'yes - check it looks like crisp pixel text', 'ok');
+  } catch (e) {
+    kv('sample rendered', 'THREW: ' + e.message, 'bad');
+  }
+}
+
+/* ------------------------------------------------------------- 4. webgl2 */
+
+let gl = null;
+function checkWebgl() {
+  head('WEBGL2');
+  const cv = document.getElementById('cvGl');
+  gl = cv.getContext('webgl2', { alpha: false, antialias: false, depth: true });
+  if (!gl) {
+    kv('webgl2', 'UNAVAILABLE - the game cannot run at all', 'bad');
+    return false;
+  }
+  kv('webgl2', 'available', 'ok');
+  kv('version', gl.getParameter(gl.VERSION));
+  kv('GLSL', gl.getParameter(gl.SHADING_LANGUAGE_VERSION));
+
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  let renderer = 'masked';
+  if (dbg) {
+    renderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+    kv('renderer', renderer);
+    kv('vendor', gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL));
+  } else {
+    kv('renderer', 'masked (anti-fingerprinting hides it)', 'warn');
+  }
+  const soft = /swiftshader|llvmpipe|software|basic render|microsoft basic/i.test(String(renderer));
+  kv('software rendering', soft ? 'YES - this alone explains poor visuals' : 'no',
+     soft ? 'bad' : 'ok');
+  kv('max texture size', String(gl.getParameter(gl.MAX_TEXTURE_SIZE)));
+  return true;
+}
+
+/* ----------------------------------- 5. canvas -> texture upload fidelity
+   The core suspicion. Every surface in the game (exam sheet, calculator,
+   HUD) is a 2D canvas uploaded to a texture whenever its contents change.
+   If an engine hands back stale or partial pixels for a canvas that was just
+   mutated, the result is exactly the corruption being reported. Both upload
+   routes are tested, because they fail independently. */
+
+/* NOTE ON SHAPE: an earlier version of this test filled a small canvas with a
+   flat colour and read one pixel back. It passed on a machine that was
+   visibly shredding the exam sheet, because a half-finished upload of solid
+   red into solid red looks exactly like a finished one. The failure is a
+   large upload the driver has not completed before the texture is read, so
+   the test needs a big surface, content that differs everywhere, and a
+   comparison of every pixel. */
+function uploadTest(useImageData, iterations) {
+  const W = 512, H = 512;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (!complete) return { error: 'framebuffer incomplete' };
+
+  const buf = new Uint8Array(W * H * 4);
+  let badFrames = 0, worstPixels = 0;
+
+  for (let n = 1; n <= iterations; n++) {
+    // Opaque, and different in every region, so a partial upload cannot hide.
+    ctx.fillStyle = 'rgb(' + ((n * 61) & 255) + ',20,40)';
+    ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < 160; i++) {
+      ctx.fillStyle = 'rgb(' + ((i * 23 + n) & 255) + ',' +
+                               ((i * 47 + n * 7) & 255) + ',' +
+                               ((i * 91 + n * 3) & 255) + ')';
+      ctx.fillRect((i * 37) % W, (i * 53) % H, 28, 22);
+    }
+
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (useImageData) {
+      const img = ctx.getImageData(0, 0, W, H);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, img.data);
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    const want = ctx.getImageData(0, 0, W, H).data;
+    let bad = 0;
+    for (let i = 0; i < buf.length; i += 4) {
+      if (Math.abs(buf[i] - want[i]) > 2 ||
+          Math.abs(buf[i + 1] - want[i + 1]) > 2 ||
+          Math.abs(buf[i + 2] - want[i + 2]) > 2) bad++;
+    }
+    if (bad) { badFrames++; if (bad > worstPixels) worstPixels = bad; }
+  }
+
+  gl.deleteFramebuffer(fbo);
+  gl.deleteTexture(tex);
+  return { iterations, badFrames, worstPixels, total: W * H };
+}
+
+function checkUploads() {
+  head('CANVAS -> TEXTURE UPLOAD');
+  const a = uploadTest(false, 30);
+  const b = uploadTest(true, 30);
+  if (a.error || b.error) { kv('error', a.error || b.error, 'bad'); return; }
+
+  const verdict = (r) => r.badFrames === 0 ? 'ok' : 'bad';
+  kv('canvas-element route', r2(a), verdict(a));
+  kv('ImageData route', r2(b), verdict(b));
+
+  if (a.badFrames > 0) {
+    put('  >> Uploading a canvas directly does NOT deliver all its pixels on', 'bad');
+    put('  >> this browser: the texture is sampled before the driver has', 'bad');
+    put('  >> finished writing it. That is the blocks and streaks on the sheet.', 'bad');
+    put('  >> The game switches to the ImageData route automatically.', 'bad');
+  }
+  if (b.badFrames > 0) {
+    put('  >> The ImageData route is also unreliable here, which is unusual.', 'bad');
+  }
+  if (a.badFrames === 0 && b.badFrames === 0) {
+    kv('verdict', 'both routes are exact on this browser', 'ok');
+  }
+
+  /* The game makes this same decision for itself at startup. Report what it
+     would pick here, so the console line in the game can be cross-checked. */
+  if (window.SATG && window.SATG.gl && window.SATG.gl.chooseUploadRoute) {
+    try {
+      const picked = window.SATG.gl.chooseUploadRoute(gl);
+      kv('game will use', picked + ' route');
+      kv('game trusts readback', String(window.SATG.gl.readbackTrusted));
+    } catch (e) {
+      kv('game route probe', 'THREW: ' + e.message, 'bad');
+    }
+  } else {
+    kv('game route probe', 'gl.js did not load', 'bad');
+  }
+}
+function r2(r) {
+  return r.iterations + ' uploads, ' + r.badFrames + ' corrupted' +
+         (r.badFrames ? '  (worst: ' + r.worstPixels + ' of ' + r.total + ' px wrong)' : '');
+}
+
+/* ------------------------------------------- 6. premultiplied alpha upload */
+
+function checkPremultiply() {
+  head('PREMULTIPLIED ALPHA');
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 4;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';   // straight (255,255,255,128)
+  ctx.fillRect(0, 0, 4, 4);                  // premultiplied ~ (128,128,128,128)
+
+  const read = (flag) => {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, flag);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const b = new Uint8Array(4);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) {
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, b);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fbo); gl.deleteTexture(tex);
+    return Array.from(b).join(',');
+  };
+
+  const on = read(true), off = read(false);
+  kv('PREMULTIPLY = true', on + '   (expect ~128,128,128,128)');
+  kv('PREMULTIPLY = false', off + '  (expect ~255,255,255,128)');
+  const onOk = /^1[0-9][0-9],/.test(on);
+  const offOk = /^2[45][0-9],/.test(off);
+  kv('verdict', onOk && offOk ? 'both modes behave to spec'
+                              : 'UNEXPECTED - alpha handling differs here',
+     onOk && offOk ? 'ok' : 'bad');
+}
+
+/* ------------------------------------------------- 7. live frame behaviour */
+
+function checkFrames() {
+  return new Promise((resolve) => {
+    head('LIVE FRAME LOOP');
+    const W = 128, H = 96;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    const buf = new Uint8Array(4);
+    let frames = 0, bad = 0;
+    const t0 = performance.now();
+
+    /* Guard: a backgrounded or throttled tab never fires rAF, and without
+       this the report would simply stop here with no explanation. */
+    const bail = setTimeout(() => {
+      if (frames === 0) {
+        kv('frames', 'NONE - the browser never ran an animation frame', 'warn');
+        put('  >> Keep this tab visible and in the foreground, then run again.', 'warn');
+        resolve();
+      }
+    }, 1500);
+
+    const tick = () => {
+      clearTimeout(bail);
+      frames++;
+      const r = (frames * 11) & 255;
+      ctx.fillStyle = 'rgb(' + r + ',40,80)';
+      ctx.fillRect(0, 0, W, H);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      if (Math.abs(buf[0] - r) > 1) bad++;
+
+      if (performance.now() - t0 < 2500) { requestAnimationFrame(tick); return; }
+
+      const secs = (performance.now() - t0) / 1000;
+      kv('frames', frames + ' in ' + secs.toFixed(1) + 's');
+      kv('frame rate', (frames / secs).toFixed(1) + ' fps',
+         frames / secs > 45 ? 'ok' : 'warn');
+      kv('bad uploads', bad + ' of ' + frames, bad === 0 ? 'ok' : 'bad');
+      if (bad > 0) put('  >> Uploads fail under real frame pressure on this browser.', 'bad');
+
+      gl.deleteFramebuffer(fbo); gl.deleteTexture(tex);
+      resolve();
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+/* --------------------------------------------- live corruption reproducer
+
+   Everything above measures whether the right BYTES reach the GPU. That is
+   only half the question. If the bytes are right and the screen still looks
+   wrong, the fault is in presentation - compositing, scaling, driver - and no
+   amount of readPixels would ever show it.
+
+   So this runs the game's actual pattern (a big sheet, mutated and re-uploaded
+   on change, drawn as a textured quad) while checking the result every frame,
+   AND shows it. Numbers clean + visibly broken is itself a diagnosis. */
+
+const REPRO_VS = `#version 300 es
+precision highp float;
+out vec2 vUv;
+void main(){
+  vec2 c = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+  vUv = vec2(c.x, 1.0 - c.y);
+  gl_Position = vec4(c * 2.0 - 1.0, 0.0, 1.0);
+}`;
+const REPRO_FS = `#version 300 es
+precision highp float;
+in vec2 vUv; uniform sampler2D uMap; out vec4 o;
+void main(){ o = texture(uMap, vUv); }`;
+
+let repro = null;
+
+function startRepro() {
+  const view = document.getElementById('cvRepro');
+  const stat = document.getElementById('reproStat');
+  const g = view.getContext('webgl2', { alpha: false, antialias: false });
+  if (!g) { stat.textContent = 'WebGL2 unavailable'; stat.className = 'bad'; return null; }
+
+  const sh = (t, src) => { const s = g.createShader(t); g.shaderSource(s, src);
+    g.compileShader(s); return s; };
+  const prog = g.createProgram();
+  g.attachShader(prog, sh(g.VERTEX_SHADER, REPRO_VS));
+  g.attachShader(prog, sh(g.FRAGMENT_SHADER, REPRO_FS));
+  g.linkProgram(prog);
+  if (!g.getProgramParameter(prog, g.LINK_STATUS)) {
+    stat.textContent = 'shader link failed: ' + g.getProgramInfoLog(prog);
+    stat.className = 'bad'; return null;
+  }
+  g.useProgram(prog);
+  g.bindVertexArray(g.createVertexArray());
+
+  // The paper, at the size the game actually uses.
+  const W = 800, H = 1120;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d');
+
+  const tex = g.createTexture();
+  g.bindTexture(g.TEXTURE_2D, tex);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.LINEAR);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE);
+  g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+  g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, cv);
+
+  // Four probe patches down the right edge, in known colours per iteration.
+  const PROBE_Y = [0.15, 0.35, 0.55, 0.75];
+
+  const state = { frames: 0, bad: 0, sel: 0, stop: false, t0: performance.now() };
+
+  const drawSheet = (n) => {
+    ctx.fillStyle = '#b8a888';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#241f1a';
+    ctx.fillRect(48, 40, W - 96, 3);
+
+    // Body text, redrawn every time - the same churn the exam sheet has.
+    ctx.font = '30px monospace';
+    for (let i = 0; i < 12; i++) {
+      ctx.fillStyle = '#241f1a';
+      ctx.fillText('the quick brown fox jumps over ' + (n + i), 48, 110 + i * 40);
+    }
+    // The A/B/C/D block, with one highlighted - the reported trigger.
+    for (let i = 0; i < 4; i++) {
+      const y = 620 + i * 90;
+      if (i === state.sel) { ctx.fillStyle = '#3a3129'; ctx.fillRect(40, y - 10, W - 80, 78); }
+      ctx.fillStyle = i === state.sel ? '#e2d9c7' : '#241f1a';
+      ctx.fillRect(48, y, 52, 52);
+      ctx.font = '34px monospace';
+      ctx.fillText('ABCD'[i] + '.  choice text ' + n, 120, y + 40);
+    }
+    // Probe patches: colour encodes the iteration, so a stale frame is obvious.
+    PROBE_Y.forEach((fy, i) => {
+      ctx.fillStyle = 'rgb(' + ((n * 17 + i * 40) & 255) + ',' +
+                               ((n * 29 + i * 15) & 255) + ',' +
+                               ((n * 43 + i * 70) & 255) + ')';
+      ctx.fillRect(W - 90, fy * H, 70, 70);
+    });
+  };
+
+  const px = new Uint8Array(4);
+  const tick = () => {
+    if (state.stop) return;
+    state.frames++;
+    const n = state.frames;
+    if (n % 12 === 0) state.sel = (state.sel + 1) % 4;   // cycle A-B-C-D
+
+    drawSheet(n);
+    g.bindTexture(g.TEXTURE_2D, tex);
+    g.texSubImage2D(g.TEXTURE_2D, 0, 0, 0, g.RGBA, g.UNSIGNED_BYTE, cv);
+
+    g.viewport(0, 0, view.width, view.height);
+    g.clearColor(0, 0, 0, 1);
+    g.clear(g.COLOR_BUFFER_BIT);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+
+    /* Check ALL four probe patches, not one. Sampling a single pixel per
+       frame is how this test previously reported "0 bad" on a machine that
+       was visibly shredding the sheet - the corruption was simply somewhere
+       else that frame. */
+    let frameBad = 0;
+    for (let i = 0; i < PROBE_Y.length; i++) {
+      const sx = Math.round(((W - 55) / W) * view.width);
+      const sy = Math.round((1 - (PROBE_Y[i] + 35 / H)) * view.height);
+      g.readPixels(sx, sy, 1, 1, g.RGBA, g.UNSIGNED_BYTE, px);
+      const want = [(n * 17 + i * 40) & 255, (n * 29 + i * 15) & 255, (n * 43 + i * 70) & 255];
+      if (Math.abs(px[0] - want[0]) > 6 || Math.abs(px[1] - want[1]) > 6 ||
+          Math.abs(px[2] - want[2]) > 6) frameBad++;
+    }
+    if (frameBad) state.bad++;
+
+    if (state.frames % 10 === 0) {
+      const secs = (performance.now() - state.t0) / 1000;
+      stat.innerHTML = '<span class="' + (state.bad ? 'bad' : 'ok') + '">' +
+        'frames ' + state.frames + '  |  bad ' + state.bad + '  |  ' +
+        (state.frames / secs).toFixed(0) + ' fps</span>';
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  return state;
+}
+
+function stopRepro() {
+  if (!repro || repro.stop) return;
+  repro.stop = true;
+  const s = document.getElementById('reproStat');
+  put('\n=== LIVE CORRUPTION TEST ===');
+  kv('frames drawn', String(repro.frames));
+  kv('frames with wrong pixels', String(repro.bad), repro.bad ? 'bad' : 'ok');
+  if (repro.bad === 0) {
+    put('  >> GPU contents were correct on every checked frame.', 'ok');
+    put('  >> If you SAW the sheet above tearing or flashing anyway, the fault', 'warn');
+    put('  >> is in presentation, not in the pixels. Say so - it changes the', 'warn');
+    put('  >> diagnosis entirely.', 'warn');
+  }
+  s.textContent = 'stopped - results added to the report below';
+  s.className = 'dim';
+  repro = null;
+}
+
+document.getElementById('reproGo').addEventListener('click', () => {
+  if (repro && !repro.stop) { stopRepro(); return; }
+  repro = startRepro();
+});
+
+/* ---------------------------------------------------------------- driver */
+
+document.getElementById('run').addEventListener('click', async () => {
+  logEl.textContent = '';
+  lines.length = 0;
+  put('THE SAT GAME - compatibility report');
+  put(new Date().toString());
+
+  checkPlatform();
+  const readbackOk = checkCanvasReadback();
+  checkFont();
+  if (!readbackOk) {
+    put('\n  NOTE: the font numbers above are unreliable, because canvas readback', 'warn');
+    put('  itself is being perturbed by this browser.', 'warn');
+  }
+  if (checkWebgl()) {
+    checkUploads();
+    checkPremultiply();
+    await checkFrames();
+
+    /* Run the live reproducer as part of the single button. It used to need a
+       second click, which is a step easily missed - and it is the one check
+       that can tell "wrong pixels" apart from "right pixels, wrong picture". */
+    const stat = document.getElementById('reproStat');
+    stat.innerHTML = '<span class="warn">WATCH THE SHEET NOW - 15 seconds</span>';
+    document.getElementById('cvRepro').scrollIntoView({ block: 'center' });
+    if (!repro) repro = startRepro();
+    if (repro) {
+      await new Promise((r) => setTimeout(r, 15000));
+      stopRepro();
+    }
+  }
+  put('\n=== END OF REPORT ===');
+});
+
+document.getElementById('copy').addEventListener('click', () => {
+  const text = lines.join('\n');
+  navigator.clipboard.writeText(text).then(
+    () => { document.getElementById('copy').textContent = 'Copied'; },
+    () => {
+      // Clipboard permission is commonly denied in hardened browsers.
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); document.getElementById('copy').textContent = 'Copied'; }
+      catch (e) { alert('Could not copy. Select the report text and copy it manually.'); }
+      ta.remove();
+    }
+  );
+});
+
+})();
+</script>
+</body>
+</html>

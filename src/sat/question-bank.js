@@ -180,7 +180,7 @@ class QuestionBank {
      the Infinity run ends with a score report that has nothing in it. The
      module modes get their breakdown from the form instead, which is why this
      tracking lives here rather than being duplicated in the game. */
-  recordResult(wasCorrect, question, response) {
+  recordResult(wasCorrect, question, response, seconds) {
     if (wasCorrect) { this.correctStreak++; this.totalCorrect++; }
     else { this.correctStreak = 0; this.totalWrong++; }
 
@@ -218,7 +218,11 @@ class QuestionBank {
       explanation: question.explanation || null,
       whyWrong: (!wasCorrect && answered && question.format === 'mc' &&
                  question.choices && question.choices[response])
-        ? (question.choices[response].why || null) : null
+        ? (question.choices[response].why || null) : null,
+      // Same reason as the exam form: a review has to be able to show the sheet.
+      paper: SATG.satUtil.paperSnapshot(question),
+      // Optional, like `response` above, so an older two-argument call still works.
+      seconds: seconds > 0 ? Math.round(seconds * 10) / 10 : 0
     });
   }
 
@@ -249,6 +253,7 @@ class QuestionBank {
           pct: this.byDifficulty[d].total ? this.byDifficulty[d].right / this.byDifficulty[d].total : 0
         })),
       items: this.items.slice(),
+      pacing: SATG.satUtil.pacing(this.items),
       strengths: rank.filter((d) => d.pct >= 0.7).slice(0, 3),
       weaknesses: rank.slice().reverse().filter((d) => d.pct < 0.7).slice(0, 3)
     };

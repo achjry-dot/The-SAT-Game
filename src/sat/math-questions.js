@@ -67,6 +67,123 @@ function linearOneVar(rng, diff) {
   });
 }
 
+/* 5.1b  One equation with a parameter, asking how many solutions it has.
+
+   The College Board asks this constantly and the bank had no generator for it,
+   so `alg-lin1-count` sat in the taxonomy with nothing behind it - a question
+   type the logbook could describe and never produce. */
+function linearSolutionCount(rng, diff) {
+  const a = rng.nz(9);
+  const b = rng.int(-15, 15);
+  const kind = rng.pick(['infinite', 'none', 'one']);
+
+  let coef, konst, correct, explanation;
+  if (kind === 'infinite') {
+    coef = a; konst = b;
+    correct = 'Infinitely many';
+    explanation = 'With that coefficient the two sides become identical, so every value of x ' +
+                  'satisfies the equation.';
+  } else if (kind === 'none') {
+    coef = a; konst = b + rng.nz(7);
+    correct = 'No solution';
+    explanation = 'The x terms cancel, leaving ' + b + ' = ' + konst +
+                  ', which is false for every x - so nothing satisfies the equation.';
+  } else {
+    do { coef = rng.nz(9); } while (coef === a);
+    konst = b;
+    correct = 'Exactly one';
+    explanation = 'The coefficients of x differ, so the terms do not cancel and the equation ' +
+                  'has a single solution.';
+  }
+
+  const stem = term(a, 'x') + signed(b) + ' = ' + term(coef, 'x') + signed(konst) +
+               '\n\nHow many solutions does the given equation have?';
+
+  return makeMC(rng, {
+    section: 'math', domain: D_ALG, skill: 'linear-equations', qtype: 'alg-lin1-count', difficulty: diff,
+    stem, correct,
+    distractors: ['Exactly one', 'Exactly two', 'No solution', 'Infinitely many']
+      .filter((s) => s !== correct)
+      .map((s) => {
+        if (s === 'Exactly two') {
+          return { v: s, why: 'A linear equation can never have exactly two solutions. Only a quadratic or higher can.' };
+        }
+        if (s === 'Exactly one') {
+          return { v: s, why: 'One solution needs the x terms to survive. Here both sides have ' + a + 'x, so the x terms cancel entirely and there is nothing left to solve.' };
+        }
+        if (s === 'No solution') {
+          return { v: s, why: kind === 'infinite'
+            ? 'The constants match as well as the coefficients, so what is left after cancelling is TRUE rather than false - which means every x works, not none.'
+            : 'The coefficients of x are different, so the terms do not cancel and there is a value of x that works.' };
+        }
+        return { v: s, why: kind === 'none'
+          ? 'The x terms do cancel, but the constants left behind are not equal, so the statement is false for every x rather than true for every x.'
+          : 'Infinitely many would need BOTH sides to be identical. The coefficients of x differ here.' };
+      }),
+    explanation
+  });
+}
+
+/* 5.1c  Write the equation of a line. The other taxonomy entry that had no
+   generator behind it. */
+function writeLineEquation(rng, diff) {
+  const kind = rng.pick(['twoPoints', 'perpendicular', 'parallel']);
+  const x1 = rng.int(-7, 7);
+  const y1 = rng.int(-9, 9);
+
+  let m, b, stem, explanation;
+
+  if (kind === 'twoPoints') {
+    // Choose the run first so the slope is a whole number rather than a fraction.
+    const run = rng.pick([1, 2, 3, -1, -2, -3]);
+    m = rng.nz(5);
+    const x2 = x1 + run, y2 = y1 + m * run;
+    b = y1 - m * x1;
+    stem = 'A line passes through the points (' + x1 + ', ' + y1 + ') and (' + x2 + ', ' + y2 + ').' +
+           '\n\nWhich equation represents this line?';
+    explanation = 'Slope = (' + y2 + ' - ' + y1 + ') / (' + x2 + ' - ' + x1 + ') = ' + m +
+                  '. Substituting a point gives b = ' + b + '.';
+  } else {
+    const given = rng.nz(4);
+    const gb = rng.int(-9, 9);
+    m = kind === 'parallel' ? given : null;
+    if (kind === 'perpendicular') {
+      /* Perpendicular slope is -1/given, which is only a clean integer when the
+         given slope is 1 or -1. Anything else would put a fraction in every
+         answer choice, which is not what this type looks like on the real test. */
+      const g = rng.pick([1, -1]);
+      m = -1 / g;
+      b = y1 - m * x1;
+      stem = 'Line k passes through (' + x1 + ', ' + y1 + ') and is perpendicular to the line ' +
+             'y = ' + term(g, 'x') + signed(gb) + '.' +
+             '\n\nWhich equation represents line k ?';
+      explanation = 'Perpendicular slopes are negative reciprocals, so the slope of k is ' + m +
+                    '. Substituting (' + x1 + ', ' + y1 + ') gives b = ' + b + '.';
+    } else {
+      b = y1 - m * x1;
+      stem = 'Line k passes through (' + x1 + ', ' + y1 + ') and is parallel to the line ' +
+             'y = ' + term(given, 'x') + signed(gb) + '.' +
+             '\n\nWhich equation represents line k ?';
+      explanation = 'Parallel lines have equal slopes, so the slope of k is ' + m +
+                    '. Substituting (' + x1 + ', ' + y1 + ') gives b = ' + b + '.';
+    }
+  }
+
+  const eq = (slope, inter) => 'y = ' + term(slope, 'x') + signed(inter);
+
+  return makeMC(rng, {
+    section: 'math', domain: D_ALG, skill: 'linear-graphs', qtype: 'alg-lin2-write', difficulty: diff,
+    stem, correct: eq(m, b),
+    distractors: [
+      { v: eq(m, -b), why: 'The slope is right but the intercept has the wrong sign. Substitute the given point back in and check that both sides balance.' },
+      { v: eq(-m, b), why: 'The slope has the wrong sign. Sketch it: this line runs the other way.' },
+      { v: eq(b, m), why: 'The slope and the intercept have swapped places. In y = mx + b the number attached to x is the slope.' },
+      { v: eq(m, b + rng.nz(4)), why: 'The slope is right but the line sits at the wrong height - it does not pass through the given point.' }
+    ],
+    explanation
+  });
+}
+
 /* 5.2  Two-variable system. Solution picked first; lines forced independent. */
 function linearSystem(rng, diff) {
   const R = { easy: 6, medium: 9, hard: 13 }[diff];
@@ -101,10 +218,10 @@ function linearSystem(rng, diff) {
     section: 'math', domain: D_ALG, skill: 'systems', qtype: 'alg-sys-solve', difficulty: diff,
     stem, correct: value,
     distractors: [
-      { v: ask === 'x' ? y0 : x0, why: 'Solved for the other variable.' },
-      { v: -value, why: 'Sign error.' },
-      { v: ask === 'x + y' ? x0 - y0 : x0 + y0, why: 'Combined with the wrong sign.' },
-      value + rng.nz(3)
+      { v: ask === 'x' ? y0 : x0, why: 'This is the OTHER variable. Both were found along the way; the question asked for ' + ask + '.' },
+      { v: -value, why: 'Sign flipped. Substitute it back into both equations - one of them will not balance.' },
+      { v: ask === 'x + y' ? x0 - y0 : x0 + y0, why: 'Combined the two solutions with the wrong operation.' },
+      { v: value + rng.nz(3), why: 'Near the solution but not on it. Substituting this into both equations will not satisfy either.' }
     ],
     explanation
   });
@@ -134,10 +251,30 @@ function systemSolutionCount(rng, diff) {
   return makeMC(rng, {
     section: 'math', domain: D_ALG, skill: 'system-solution-count', qtype: 'alg-sys-count', difficulty: diff,
     stem, correct,
-    // "Exactly two" is never correct for a linear system; it is here because
-    // students carry the rule over from quadratics.
+    /* "Exactly two" is never correct for a linear system; it is here because
+       students carry the rule over from quadratics. Each reason is derived from
+       what this particular system actually is, so the same wrong option gets a
+       different explanation depending on the pair of lines in front of it. */
     distractors: ['Exactly one', 'Exactly two', 'No solution', 'Infinitely many']
-      .filter((s) => s !== correct),
+      .filter((s) => s !== correct)
+      .map((s) => {
+        if (s === 'Exactly two') {
+          return { v: s, why: 'Two straight lines can meet once, never, or everywhere - never in exactly two places. That answer belongs to quadratics.' };
+        }
+        if (s === 'Exactly one') {
+          return { v: s, why: kind === 'none'
+            ? 'The left sides ARE proportional here, so the lines have the same slope and run parallel. They never meet.'
+            : 'The second equation is just the first one multiplied through, so the two describe the same line and share every point on it.' };
+        }
+        if (s === 'No solution') {
+          return { v: s, why: kind === 'one'
+            ? 'The coefficients are not proportional, so these lines have different slopes and must cross somewhere.'
+            : 'The constants are proportional too, by the same multiplier, so the equations are the same line rather than parallel ones.' };
+        }
+        return { v: s, why: kind === 'one'
+          ? 'Infinitely many would need one equation to be a multiple of the other. Here the coefficients are not proportional at all.'
+          : 'The left sides are proportional but the constants are not, so the lines are parallel - same slope, different position, no shared point.' };
+      }),
     explanation: kind === 'one'
       ? 'The coefficients are not proportional, so the lines intersect exactly once.'
       : kind === 'none'
@@ -224,14 +361,23 @@ function linearInterpretation(rng, diff) {
     ? 'For each additional unit of t, the modelled quantity ' + dir + ' by ' + mag + '.'
     : 'When t = 0, the modelled quantity is ' + b + '.';
 
+  /* Two questions share one model, and the wrong answers are the same handful
+     of confusions either way round: the sign of the rate, and the slope being
+     read as the starting value or the other way about. */
   const distractors = askSlope ? [
-    'For each additional unit of t, the modelled quantity ' + antiDir + ' by ' + mag + '.',
-    'When t = 0, the modelled quantity is ' + mag + '.',
-    'The modelled quantity is ' + mag + ' when t = ' + b + '.'
+    { v: 'For each additional unit of t, the modelled quantity ' + antiDir + ' by ' + mag + '.',
+      why: 'Right size, wrong direction. The coefficient of t is ' + m + ', and its SIGN says whether the quantity ' + dir + ' or ' + antiDir + '.' },
+    { v: 'When t = 0, the modelled quantity is ' + mag + '.',
+      why: 'This reads the rate as the starting value. At t = 0 every term with a t in it vanishes, so what is left is the constant ' + b + ', not the coefficient.' },
+    { v: 'The modelled quantity is ' + mag + ' when t = ' + b + '.',
+      why: 'The two numbers in the model have been swapped into each other\'s roles. ' + m + ' is a rate per unit of t; ' + b + ' is a quantity at t = 0.' }
   ] : [
-    'For each additional unit of t, the modelled quantity ' + dir + ' by ' + b + '.',
-    'When t = 0, the modelled quantity is ' + m + '.',
-    'The modelled quantity reaches ' + b + ' after one unit of t.'
+    { v: 'For each additional unit of t, the modelled quantity ' + dir + ' by ' + b + '.',
+      why: 'This makes the starting value into a rate. ' + b + ' is where the model sits at t = 0; the per-unit change is the coefficient ' + m + '.' },
+    { v: 'When t = 0, the modelled quantity is ' + m + '.',
+      why: 'This is the coefficient of t. Setting t = 0 removes that whole term, leaving the constant ' + b + '.' },
+    { v: 'The modelled quantity reaches ' + b + ' after one unit of t.',
+      why: 'The constant is the value at t = 0, not at t = 1. After one unit the model has already changed by ' + m + '.' }
   ];
 
   return makeMC(rng, {
@@ -307,10 +453,10 @@ function quadraticFactor(rng, diff) {
     section: 'math', domain: D_ADV, skill: 'quadratic-roots', qtype: 'adv-nleq-quad-roots', difficulty: diff,
     stem, correct: value,
     distractors: [
-      { v: askGreater ? lesser : greater, why: 'Took the wrong root.' },
-      { v: -value, why: 'Sign error reading the factor.' },
-      -(askGreater ? lesser : greater),
-      value + 1
+      { v: askGreater ? lesser : greater, why: 'This is the other root. Both are solutions; the question asked for the ' + (askGreater ? 'greater' : 'lesser') + ' one.' },
+      { v: -value, why: 'Sign flipped. A factor of (x - ' + value + ') gives the root x = +' + value + ' - set the bracket to zero and solve it rather than reading the number straight off.' },
+      { v: -(askGreater ? lesser : greater), why: 'The other root, with its sign flipped as well - both mistakes at once.' },
+      { v: value + 1, why: 'One away from a root. Substitute it back into the equation and it will not give zero.' }
     ],
     explanation
   });
@@ -335,10 +481,10 @@ function quadraticVieta(rng, diff) {
     section: 'math', domain: D_ADV, skill: 'quadratic-vieta', qtype: 'adv-nleq-quad-sumproduct', difficulty: diff,
     stem, correct: value,
     distractors: [
-      { v: -value, why: 'Dropped the sign from -b/a.' },
-      { v: askSum ? r1 * r2 : r1 + r2, why: 'Used the other relationship.' },
-      { v: askSum ? b : c, why: 'Read the coefficient straight off.' },
-      value + a
+      { v: -value, why: 'Sign dropped. The sum of the roots is MINUS b/a, and the minus is easy to lose.' },
+      { v: askSum ? r1 * r2 : r1 + r2, why: 'This is the ' + (askSum ? 'PRODUCT' : 'SUM') + ' of the roots. The question asked for the ' + (askSum ? 'sum' : 'product') + '.' },
+      { v: askSum ? b : c, why: 'Read the coefficient straight off the equation. It has to be divided by a first - the relationships are -b/a and c/a, not -b and c.' },
+      { v: value + a, why: 'The leading coefficient has been added in somewhere rather than divided by.' }
     ],
     explanation: 'For ax² + bx + c = 0, the sum of the roots is -b/a and the product is c/a. ' +
                  'Here the roots are ' + r1 + ' and ' + r2 + '.'
@@ -361,10 +507,10 @@ function vertexForm(rng, diff) {
     section: 'math', domain: D_ADV, skill: 'quadratic-vertex', qtype: 'adv-nlfn-vertex', difficulty: diff,
     stem, correct: k,
     distractors: [
-      { v: h, why: 'Gave the x-coordinate of the vertex instead of the value.' },
-      { v: -k, why: 'Sign error reading the constant.' },
-      -h,
-      a
+      { v: h, why: 'This is the x-coordinate of the vertex - WHERE the minimum or maximum happens, not the value there.' },
+      { v: -k, why: 'Sign flipped. In a(x - h)² + k the constant k is added, so it is read off with its own sign.' },
+      { v: -h, why: 'The x-coordinate of the vertex with its sign flipped. Two mistakes: wrong coordinate, wrong sign.' },
+      { v: a, why: 'This is the leading coefficient. It decides whether the parabola opens up or down, not how high or low the vertex sits.' }
     ],
     explanation: 'The vertex is at (' + h + ', ' + k + '). Since a = ' + a + ' is ' +
                  (isMin ? 'positive' : 'negative') + ', the parabola opens ' +
@@ -401,7 +547,19 @@ function discriminant(rng, diff) {
   return makeMC(rng, {
     section: 'math', domain: D_ADV, skill: 'discriminant', qtype: 'adv-nleq-discriminant', difficulty: diff,
     stem, correct,
-    distractors: ['Two', 'One', 'Zero', 'Infinitely many'].filter((s) => s !== correct),
+    /* The reason states the discriminant's actual sign, so it teaches the test
+       rather than just contradicting the choice. */
+    distractors: ['Two', 'One', 'Zero', 'Infinitely many']
+      .filter((s) => s !== correct)
+      .map((s) => {
+        if (s === 'Infinitely many') {
+          return { v: s, why: 'A quadratic can have at most two solutions. Infinitely many would mean every value of x works, which only happens when the whole equation collapses to 0 = 0.' };
+        }
+        const sign = disc > 0 ? 'positive' : disc === 0 ? 'exactly zero' : 'negative';
+        const need = s === 'Two' ? 'positive' : s === 'One' ? 'exactly zero' : 'negative';
+        return { v: s, why: s + ' real solutions would need b² - 4ac to be ' + need +
+                            '. Here it works out to ' + disc + ', which is ' + sign + '.' };
+      }),
     explanation: 'The discriminant is b² - 4ac = ' + (b * b) + ' - ' + (4 * a * c) + ' = ' + disc +
                  ', which is ' + (disc > 0 ? 'positive, so there are two real solutions.'
                    : disc === 0 ? 'zero, so there is exactly one real solution.'
@@ -439,12 +597,14 @@ function exponentialModel(rng, diff) {
     section: 'math', domain: D_ADV, skill: 'exponential-model', qtype: 'adv-nlfn-exp-model', difficulty: diff,
     stem, correct,
     distractors: [
-      // flipped growth for decay
-      'The initial value is ' + fmtCount(A0) + ', and it ' + antiDir + ' by ' + rPct + '% each ' + ctx.unit + '.',
-      // read the base as the rate instead of computing 1 - r
-      'The initial value is ' + fmtCount(A0) + ', and it ' + dir + ' by ' + (100 - rPct) + '% each ' + ctx.unit + '.',
-      // swapped which number plays which role
-      'The initial value is ' + fStr + ', and it ' + dir + ' by ' + fmtCount(A0) + '% each ' + ctx.unit + '.'
+      { v: 'The initial value is ' + fmtCount(A0) + ', and it ' + antiDir + ' by ' + rPct + '% each ' + ctx.unit + '.',
+        why: 'Right rate, wrong direction. A base of ' + fStr + ' is ' +
+             (ctx.growth ? 'above 1, which means growth' : 'below 1, which means decay') + '.' },
+      { v: 'The initial value is ' + fmtCount(A0) + ', and it ' + dir + ' by ' + (100 - rPct) + '% each ' + ctx.unit + '.',
+        why: 'Read the base ' + fStr + ' as the percentage itself. The base is 1 ' +
+             (ctx.growth ? 'PLUS' : 'MINUS') + ' the rate, so the rate is ' + rPct + '%, not ' + (100 - rPct) + '%.' },
+      { v: 'The initial value is ' + fStr + ', and it ' + dir + ' by ' + fmtCount(A0) + '% each ' + ctx.unit + '.',
+        why: 'The two numbers have swapped jobs. In A₀·bᵗ the coefficient out front is the starting amount and the base carries the rate.' }
     ],
     explanation: 'In A(t) = A₀·bᵗ the coefficient ' + fmtCount(A0) + ' is the initial value. Since b = ' +
                  fStr + ', the quantity ' + dir + ' by ' + rPct + '% per ' + ctx.unit + '.'
@@ -473,10 +633,10 @@ function exponentialEvaluate(rng, diff) {
     section: 'math', domain: D_ADV, skill: 'exponential-evaluate', qtype: 'adv-nlfn-exp-evaluate', difficulty: diff,
     stem, correct: value,
     distractors: [
-      { v: A0 * base * t, why: 'Multiplied instead of exponentiated.' },
-      { v: Math.pow(A0 * base, t), why: 'Applied the exponent to the coefficient too.' },
-      { v: A0 * Math.pow(base, t - 1), why: 'Off by one in the exponent.' },
-      value + A0
+      { v: A0 * base * t, why: 'Multiplied by the exponent instead of raising to it. ' + base + 'ᵗ means ' + base + ' multiplied by itself ' + t + ' times, not ' + base + ' × ' + t + '.' },
+      { v: Math.pow(A0 * base, t), why: 'Raised the coefficient to the power as well. Only the base carries the exponent; the ' + A0 + ' out front multiplies once at the end.' },
+      { v: A0 * Math.pow(base, t - 1), why: 'One step short - this is the value at t = ' + (t - 1) + '.' },
+      { v: value + A0, why: 'The starting amount has been added on at the end instead of multiplied in.' }
     ],
     explanation
   });
@@ -501,9 +661,9 @@ function equivalentExpression(rng, diff) {
       stem,
       correct: '(' + term(a, 'x') + ' - ' + b + ')(' + term(a, 'x') + ' + ' + b + ')',
       distractors: [
-        { v: '(' + term(a, 'x') + ' - ' + b + ')²', why: 'Treated it as a perfect square.' },
-        '(' + term(a, 'x') + ' + ' + b + ')²',
-        { v: '(' + term(a * a, 'x') + ' - ' + b + ')(x + ' + b + ')', why: 'Mishandled the leading coefficient.' },
+        { v: '(' + term(a, 'x') + ' - ' + b + ')²', why: 'Treated it as a perfect square. Expand this and a middle x term appears; the original expression has none, which is the signal for a difference of squares.' },
+        { v: '(' + term(a, 'x') + ' + ' + b + ')²', why: 'Same problem with the other sign - squaring a binomial always leaves a middle term, and there is none here.' },
+        { v: '(' + term(a * a, 'x') + ' - ' + b + ')(x + ' + b + ')', why: 'The leading coefficient was not square-rooted. A² is ' + (a * a) + 'x², so A is ' + term(a, 'x') + ', not ' + term(a * a, 'x') + '.' },
       ],
       explanation: 'This is a difference of squares: A² - B² = (A - B)(A + B) with A = ' +
                    term(a, 'x') + ' and B = ' + b + '.'
@@ -568,13 +728,21 @@ function exponentRules(rng, diff) {
   if (kind === 'product') {
     stem = 'Which expression is equivalent to (' + a + 'x^' + m + ')(x^' + n + ') ?';
     correct = a + 'x^' + (m + n);
-    distractors = [a + 'x^' + (m * n), a + 'x^' + Math.abs(m - n), (a * a) + 'x^' + (m + n)];
+    distractors = [
+      { v: a + 'x^' + (m * n), why: 'Multiplied the exponents. Multiplying the powers adds them; multiplying the exponents is what happens when a power is RAISED to a power.' },
+      { v: a + 'x^' + Math.abs(m - n), why: 'Subtracted the exponents. That is the rule for DIVIDING powers of the same base.' },
+      { v: (a * a) + 'x^' + (m + n), why: 'The exponent is right, but the coefficient was squared. Only one of the two terms carries a coefficient, so it is unchanged.' }
+    ];
     explanation = 'Multiplying powers of the same base adds the exponents: x^' + m + ' · x^' + n +
                   ' = x^' + (m + n) + '.';
   } else if (kind === 'power') {
     stem = 'Which expression is equivalent to (' + a + 'x^' + m + ')^' + n + ' ?';
     correct = Math.pow(a, n) + 'x^' + (m * n);
-    distractors = [a + 'x^' + (m * n), Math.pow(a, n) + 'x^' + (m + n), (a * n) + 'x^' + (m * n)];
+    distractors = [
+      { v: a + 'x^' + (m * n), why: 'The exponent is right, but the coefficient was left alone. The outer power applies to EVERY factor inside the bracket, coefficient included.' },
+      { v: Math.pow(a, n) + 'x^' + (m + n), why: 'Added the exponents. Adding is for multiplying two powers; raising a power to a power multiplies them.' },
+      { v: (a * n) + 'x^' + (m * n), why: 'Multiplied the coefficient by the outer power instead of raising it to that power.' }
+    ];
     explanation = 'Raising a product to a power raises each factor: ' + a + '^' + n + ' = ' +
                   Math.pow(a, n) + ', and x^' + m + ' raised to ' + n + ' is x^' + (m * n) + '.';
   } else if (kind === 'quotient') {
@@ -590,13 +758,21 @@ function exponentRules(rng, diff) {
     }
     stem = 'Which expression is equivalent to (x^' + big + ') / (x^' + small + ') ?';
     correct = 'x^' + (big - small);
-    distractors = ['x^' + (big + small), 'x^' + (big * small), 'x^' + small];
+    distractors = [
+      { v: 'x^' + (big + small), why: 'Added the exponents. Adding is for MULTIPLYING powers of the same base; dividing subtracts them.' },
+      { v: 'x^' + (big * small), why: 'Multiplied the exponents. That is the rule for raising a power to a power.' },
+      { v: 'x^' + small, why: 'Kept the bottom exponent. The top one has to have the bottom one subtracted from it.' }
+    ];
     explanation = 'Dividing powers of the same base subtracts the exponents: ' + big + ' - ' +
                   small + ' = ' + (big - small) + '.';
   } else {
     stem = 'Which expression is equivalent to ' + a + 'x^(-' + m + ') ?';
     correct = a + '/x^' + m;
-    distractors = ['-' + a + 'x^' + m, '1/(' + a + 'x^' + m + ')', '-' + a + '/x^' + m];
+    distractors = [
+      { v: '-' + a + 'x^' + m, why: 'Turned the negative exponent into a negative NUMBER. A negative exponent is about position - it moves the power across the fraction bar - not about sign.' },
+      { v: '1/(' + a + 'x^' + m + ')', why: 'Sent the coefficient down with the power. The negative exponent belongs to x alone, so ' + a + ' stays on top.' },
+      { v: '-' + a + '/x^' + m, why: 'Moved the power down correctly but also flipped the sign. Only one of those two things happens.' }
+    ];
     explanation = 'A negative exponent moves the power to the denominator; the coefficient ' +
                   a + ' stays in the numerator.';
   }
@@ -633,10 +809,10 @@ function radicalEquation(rng, diff) {
     section: 'math', domain: D_ADV, skill: 'radical-equation', qtype: 'adv-nleq-radical', difficulty: diff,
     stem, correct: value,
     distractors: [
-      { v: (k - c) / a, why: 'Subtracted k instead of squaring it.' },
-      { v: sq, why: 'Stopped at the squared value.' },
-      -value,
-      value + k
+      { v: (k - c) / a, why: 'Subtracted ' + k + ' instead of squaring it. To undo a square root you square the OTHER side, so the right-hand side becomes ' + sq + '.' },
+      { v: sq, why: 'Stopped after squaring. ' + sq + ' is what the expression under the root equals - there is still an equation left to solve for x.' },
+      { v: -value, why: 'Sign flipped. Substitute it back under the root and check: the two sides will not match.' },
+      { v: value + k, why: 'The number on the right of the equation has been added to the answer instead of being squared and used in the equation.' }
     ],
     explanation
   });
@@ -665,10 +841,10 @@ function functionNotation(rng, diff) {
     section: 'math', domain: D_ADV, skill: 'function-notation', qtype: 'adv-nlfn-composite', difficulty: diff,
     stem, correct: value,
     distractors: [
-      { v: c * (a * x + b) + d, why: 'Composed in the wrong order.' },
-      { v: inner, why: 'Stopped after evaluating g.' },
-      { v: a * x + b, why: 'Evaluated f directly at x.' },
-      value + a
+      { v: c * (a * x + b) + d, why: 'Composed the other way round. The inner function is evaluated first, and its OUTPUT is what goes into the outer one.' },
+      { v: inner, why: 'Stopped halfway. This is the value of the inner function; it still has to be fed into the outer one.' },
+      { v: a * x + b, why: 'Put x straight into the outer function, skipping the inner one entirely.' },
+      { v: value + a, why: 'One coefficient has been added on at the end rather than used inside the composition.' }
     ],
     explanation
   });
@@ -726,10 +902,10 @@ function ratesProportion(rng, diff) {
     section: 'math', domain: D_PSDA, skill: 'rates-proportions', qtype: 'psda-ratio-rate', difficulty: diff,
     stem, correct: value,
     distractors: [
-      { v: Math.round(a * b / c) || value + 3, why: 'Set the proportion up upside down.' },
-      { v: Math.round(c / perUnit), why: 'Divided instead of multiplied.' },
-      { v: perUnit * c + a, why: 'Added the original amount again.' },
-      a * c
+      { v: Math.round(a * b / c) || value + 3, why: 'The proportion is upside down. Check the units: the rate has to be written so the unwanted unit cancels.' },
+      { v: Math.round(c / perUnit), why: 'Divided by the rate where multiplying was needed. Decide first whether the answer should come out larger or smaller than what you started with.' },
+      { v: perUnit * c + a, why: 'The original amount has been added on again after the rate was applied.' },
+      { v: a * c, why: 'Multiplied the two given numbers directly without first working out the rate per unit.' }
     ],
     explanation
   });
@@ -752,7 +928,12 @@ function percentages(rng, diff) {
     return makeMC(rng, {
       section: 'math', domain: D_PSDA, skill: 'percentages', qtype: qt, difficulty: diff,
       stem, correct: value,
-      distractors: [base * pct / 10, base - value, base / pct, value * 2],
+      distractors: [
+        { v: base * pct / 10, why: 'Divided by 10 instead of 100. "Per cent" means per hundred, so the percentage always goes over 100.' },
+        { v: base - value, why: 'This is what is LEFT after taking the percentage away, not the percentage itself.' },
+        { v: base / pct, why: 'Divided by the percentage. Finding a percentage of something multiplies.' },
+        { v: value * 2, why: 'Twice the right answer - the percentage was applied and then doubled.' }
+      ],
       explanation: pct + '% of ' + base + ' = 0.' + (pct < 10 ? '0' + pct : pct) + ' × ' +
                    base + ' = ' + value + '.'
     });
@@ -771,9 +952,9 @@ function percentages(rng, diff) {
       stem, correct: value,
       distractors: [
         { v: up ? base * (1 - pct / 100) : base * (1 + pct / 100), why: 'Moved the wrong way.' },
-        { v: base * pct / 100, why: 'Gave the change, not the new price.' },
-        { v: base + pct, why: 'Added the percent as dollars.' },
-        value + base * 0.01 * pct
+        { v: base * pct / 100, why: 'This is the SIZE of the change, not the new price. It still has to be ' + (up ? 'added to' : 'taken off') + ' the original.' },
+        { v: base + pct, why: 'Added the percentage as if it were dollars. ' + pct + '% of ' + fmtMoney(base) + ' is ' + fmtNumber(base * pct / 100) + ', not ' + pct + '.' },
+        { v: value + base * 0.01 * pct, why: 'The change has been applied twice.' }
       ],
       explanation: 'The new price is ' + base + ' × ' + (up ? 1 + pct / 100 : 1 - pct / 100).toFixed(2) +
                    ' = ' + fmtNumber(value) + '.'
@@ -795,10 +976,10 @@ function percentages(rng, diff) {
       stem, correct: value,
       // The headline trap: adding the percentages instead of compounding them.
       distractors: [
-        base * (1 + (p1 - p2) / 100),
-        base,
-        base * (1 - p1 / 100) * (1 + p2 / 100),
-        value + base * 0.01
+        { v: base * (1 + (p1 - p2) / 100), why: 'Added the two percentages together and applied the result once. Percent changes compound - the second one acts on the already-changed amount, not on the original.' },
+        { v: base, why: 'Assumes an increase of ' + p1 + '% and a decrease of ' + p2 + '% cancel out. They only would if the two acted on the same starting amount, and they do not.' },
+        { v: base * (1 - p1 / 100) * (1 + p2 / 100), why: 'Applied the decrease first and the increase second. The order given in the question is the other way round.' },
+        { v: value + base * 0.01, why: 'A one-percent slip on the base has crept in somewhere in the arithmetic.' }
       ],
       explanation: 'Percent changes compound: ' + base + ' × ' + (1 + p1 / 100).toFixed(2) +
                    ' × ' + (1 - p2 / 100).toFixed(2) + ' = ' + fmtNumber(value) +
@@ -818,10 +999,10 @@ function percentages(rng, diff) {
     section: 'math', domain: D_PSDA, skill: 'percentages', qtype: qt, difficulty: diff,
     stem, correct: original,
     distractors: [
-      { v: after * (1 - pct / 100), why: 'Subtracted the percent from the new value.' },
-      after - pct,
-      after / pct,
-      original + pct
+      { v: after * (1 - pct / 100), why: 'Took ' + pct + '% off the NEW value. The increase was ' + pct + '% of the ORIGINAL, which is a smaller amount, so this overshoots.' },
+      { v: after - pct, why: 'Subtracted the percentage as if it were a plain quantity rather than a proportion of the original.' },
+      { v: after / pct, why: 'Divided by ' + pct + ' instead of by ' + (1 + pct / 100).toFixed(2) + '. To undo a ' + pct + '% increase you divide by 1 plus the rate.' },
+      { v: original + pct, why: 'Added the percentage number to the answer as if it were units.' }
     ],
     explanation: 'If x is the original, then x × ' + (1 + pct / 100).toFixed(2) + ' = ' + after +
                  ', so x = ' + original + '.'
@@ -848,7 +1029,12 @@ function unitConversion(rng, diff) {
   return makeMC(rng, {
     section: 'math', domain: D_PSDA, skill: 'unit-conversion', qtype: 'psda-ratio-units', difficulty: diff,
     stem, correct: value,
-    distractors: [v / c.k, v + c.k, value * c.k, v * c.k / 10],
+    distractors: [
+      { v: v / c.k, why: 'Divided by the conversion factor instead of multiplying. Check the direction: one ' + c.from.replace(/s$/, '') + ' is MANY ' + c.to + ', so the number has to get bigger.' },
+      { v: v + c.k, why: 'Added the conversion factor. A conversion scales the measurement; it does not add to it.' },
+      { v: value * c.k, why: 'Multiplied by the factor twice. One conversion, one multiplication.' },
+      { v: v * c.k / 10, why: 'The right method with a factor-of-ten slip in the arithmetic.' }
+    ],
     explanation: v + ' × ' + fmtCount(c.k) + ' = ' + fmtCount(value) + ' ' + c.to + '.'
   });
 }
@@ -934,10 +1120,12 @@ function statisticsCenter(rng, diff) {
     section: 'math', domain: D_PSDA, skill: 'statistics-center', qtype: 'psda-1var-center', difficulty: diff,
     stem, correct: value,
     distractors: [
-      { v: which === 'median' ? Math.round(mean * 100) / 100 : median, why: 'Computed a different statistic.' },
-      range,
-      { v: data[n - 1], why: 'Reported the maximum.' },
-      Math.round(mean * 100) / 100 + 1
+      { v: which === 'median' ? Math.round(mean * 100) / 100 : median,
+        why: 'This is the ' + (which === 'median' ? 'MEAN' : 'MEDIAN') + '. The question asked for the ' + which + ': ' +
+             (which === 'median' ? 'the middle value once the list is in order' : 'the total divided by how many there are') + '.' },
+      { v: range, why: 'This is the RANGE - the largest value minus the smallest. It measures spread, not centre.' },
+      { v: data[n - 1], why: 'This is the largest value in the set, not a measure of its centre.' },
+      { v: Math.round(mean * 100) / 100 + 1, why: 'One away from the mean - check the addition and the count of values.' }
     ],
     explanation
   });
@@ -959,12 +1147,137 @@ function statisticsEffect(rng, diff) {
     stem,
     correct: 'The mean increases substantially, and the median changes only slightly.',
     distractors: [
-      'The mean and the median both increase substantially.',
-      'The median increases substantially, and the mean changes only slightly.',
-      'Neither the mean nor the median changes.'
+      { v: 'The mean and the median both increase substantially.',
+        why: 'The mean does move a long way, but the median does not. The median only cares where a value sits in the order, and one new value shifts that position by half a place - it does not matter how far out it is.' },
+      { v: 'The median increases substantially, and the mean changes only slightly.',
+        why: 'This has the two the wrong way round. The mean is the one built from every value, so it is the one an extreme value drags.' },
+      { v: 'Neither the mean nor the median changes.',
+        why: 'Adding a value well outside the existing range always moves the mean. Only the median is nearly immune.' }
     ],
     explanation: 'The mean uses every value, so a far-out point pulls it strongly. ' +
                  'The median depends only on position, so an extreme value shifts it at most one place.'
+  });
+}
+
+/* 5.11b  Margin of error.
+
+   The other half of the pair the taxonomy declared and nothing produced. The
+   real test asks two things about a margin of error: what interval it implies,
+   and what would make it narrower. Both are here. */
+const MOE_CONTEXTS = [
+  { who: 'residents of a city', what: 'mean commute time', unit: 'minutes' },
+  { who: 'students at a university', what: 'mean hours of sleep on a weeknight', unit: 'hours' },
+  { who: 'adult visitors to a park', what: 'mean length of visit', unit: 'minutes' },
+  { who: 'households in a county', what: 'mean monthly water use', unit: 'cubic metres' }
+];
+
+function marginOfError(rng, diff) {
+  const ctx = rng.pick(MOE_CONTEXTS);
+  const n = rng.pick([200, 250, 400, 500, 800, 1000]);
+  const mean = rng.int(12, 80);
+  const moe = rng.pick([1, 2, 3, 4, 5]);
+  const lo = mean - moe, hi = mean + moe;
+  const askNarrow = rng.bool(0.35);
+
+  const setup = 'A random sample of ' + fmtCount(n) + ' ' + ctx.who + ' was surveyed. ' +
+                'The sample had a ' + ctx.what + ' of ' + mean + ' ' + ctx.unit +
+                ', with an associated margin of error of ' + moe + ' ' + ctx.unit + '.';
+
+  if (askNarrow) {
+    return makeMC(rng, {
+      section: 'math', domain: D_PSDA, skill: 'inference-margin-of-error',
+      qtype: 'psda-infer-moe', difficulty: diff,
+      stem: setup + '\n\nWhich change to the study would be most likely to decrease the margin of error?',
+      correct: 'Surveying a larger random sample of ' + ctx.who + '.',
+      distractors: [
+        { v: 'Surveying a smaller random sample of ' + ctx.who + '.',
+          why: 'Backwards. A smaller sample carries LESS information, so the interval around the estimate gets wider, not narrower.' },
+        { v: 'Surveying the same number of ' + ctx.who + ' on a different day.',
+          why: 'This changes which people are in the sample but not how many. Margin of error is driven by sample size, not by when the sample was taken.' },
+        { v: 'Reporting the median instead of the mean.',
+          why: 'Choosing a different statistic to report does not change how much sampling error there is in the estimate.' }
+      ],
+      explanation: 'Margin of error shrinks as the sample grows - it falls with the square root of ' +
+                   'the sample size, so quadrupling the sample halves the margin.'
+    });
+  }
+
+  return makeMC(rng, {
+    section: 'math', domain: D_PSDA, skill: 'inference-margin-of-error',
+    qtype: 'psda-infer-moe', difficulty: diff,
+    stem: setup + '\n\nWhich conclusion is most appropriate?',
+    correct: 'It is plausible that the ' + ctx.what + ' for all ' + ctx.who +
+             ' is between ' + lo + ' and ' + hi + ' ' + ctx.unit + '.',
+    distractors: [
+      { v: 'Every one of the ' + ctx.who + ' surveyed reported between ' + lo + ' and ' + hi + ' ' + ctx.unit + '.',
+        why: 'The interval is about the AVERAGE for the whole population, not about individuals. Individual values scatter far more widely than the mean does.' },
+      { v: 'The ' + ctx.what + ' for all ' + ctx.who + ' is exactly ' + mean + ' ' + ctx.unit + '.',
+        why: 'That is the sample mean. The whole point of a margin of error is that the population value is not known exactly - if it were, no interval would be needed.' },
+      { v: 'At least ' + fmtCount(n) + ' of the ' + ctx.who + ' have a ' + ctx.what +
+           ' of at least ' + lo + ' ' + ctx.unit + '.',
+        why: 'This turns an estimate about a population average into a count of individuals, which the survey gives no basis for.' }
+    ],
+    explanation: 'The margin of error gives a plausible range for the POPULATION mean: ' +
+                 mean + ' ± ' + moe + ', so ' + lo + ' to ' + hi + ' ' + ctx.unit +
+                 '. It describes the average, not any individual.'
+  });
+}
+
+/* 5.11c  Study design - what a study of this shape actually licenses. */
+const STUDY_CONTEXTS = [
+  { subj: 'a daily walk', outcome: 'lower reported stress', group: 'office workers' },
+  { subj: 'a music lesson each week', outcome: 'higher test scores', group: 'secondary students' },
+  { subj: 'a standing desk', outcome: 'less back pain', group: 'call centre staff' },
+  { subj: 'a morning reading habit', outcome: 'better recall', group: 'volunteers over sixty' }
+];
+
+function studyDesign(rng, diff) {
+  const c = rng.pick(STUDY_CONTEXTS);
+  const randomised = rng.bool();
+  const n = rng.pick([80, 120, 200, 350]);
+
+  const stem = randomised
+    ? fmtCount(n) + ' ' + c.group + ' volunteered for a study and were RANDOMLY assigned either ' +
+      'to take up ' + c.subj + ' or to carry on as usual. After six months the group with ' +
+      c.subj + ' showed ' + c.outcome + '.\n\nWhat is the most appropriate conclusion?'
+    : fmtCount(n) + ' ' + c.group + ' were surveyed. Those who already had ' + c.subj +
+      ' reported ' + c.outcome + ' than those who did not.' +
+      '\n\nWhat is the most appropriate conclusion?';
+
+  /* The two axes the real test tests: whether the design supports CAUSE, and
+     who the conclusion may be extended to. A randomised assignment buys cause;
+     volunteering restricts the population either way. */
+  const correct = randomised
+    ? c.subj.charAt(0).toUpperCase() + c.subj.slice(1) + ' likely causes ' + c.outcome +
+      ' in ' + c.group + ' similar to the volunteers.'
+    : 'There is an association between ' + c.subj + ' and ' + c.outcome +
+      ', but no cause can be established.';
+
+  return makeMC(rng, {
+    section: 'math', domain: D_PSDA, skill: 'evaluating-claims',
+    qtype: 'psda-claims-design', difficulty: diff,
+    stem, correct,
+    distractors: randomised ? [
+      { v: 'There is an association between ' + c.subj + ' and ' + c.outcome + ', but no cause can be established.',
+        why: 'Too cautious. Subjects were assigned at RANDOM, which is exactly what licenses a causal conclusion - random assignment is what evens out the other differences between the groups.' },
+      { v: c.subj.charAt(0).toUpperCase() + c.subj.slice(1) + ' causes ' + c.outcome + ' in all adults.',
+        why: 'Too broad. The subjects were ' + c.group + ' who volunteered, so the conclusion extends to people like them - not to adults in general.' },
+      { v: 'No conclusion can be drawn, because the subjects were volunteers.',
+        why: 'Volunteering limits WHO the result applies to; it does not destroy the study. Random assignment within the volunteers still supports a causal claim about that group.' }
+    ] : [
+      { v: c.subj.charAt(0).toUpperCase() + c.subj.slice(1) + ' causes ' + c.outcome + ' in ' + c.group + '.',
+        why: 'Nobody was assigned to anything - the subjects already had or did not have ' + c.subj + '. Something else could easily explain both, so this design cannot establish cause.' },
+      { v: 'Adopting ' + c.subj + ' would produce ' + c.outcome + ' in anyone.',
+        why: 'Two problems at once: it claims cause from an observational study, and it extends the claim well beyond the group that was actually surveyed.' },
+      { v: 'No relationship exists between ' + c.subj + ' and ' + c.outcome + '.',
+        why: 'A difference WAS observed. What the study cannot say is why - which is not the same as saying there is nothing there.' }
+    ],
+    explanation: randomised
+      ? 'Random ASSIGNMENT is what supports a causal conclusion. Random SELECTION is what ' +
+        'supports generalising to a wider population - and these subjects volunteered, so the ' +
+        'conclusion stays with people like them.'
+      : 'This is an observational study: the subjects sorted themselves. It can establish an ' +
+        'association, but a third factor could explain both, so it cannot establish cause.'
   });
 }
 
@@ -982,7 +1295,12 @@ function scatterModel(rng, diff) {
   return makeMC(rng, {
     section: 'math', domain: D_PSDA, skill: 'scatter-model', qtype: 'psda-2var-scatter', difficulty: diff,
     stem, correct: value,
-    distractors: [m * x, b + x, m + b + x, value + m],
+    distractors: [
+      { v: m * x, why: 'Left off the starting value of ' + b + '. That is where the model begins at week zero, so it is part of every prediction.' },
+      { v: b + x, why: 'Added the number of weeks to the starting value without multiplying by the rate of ' + m + ' per week.' },
+      { v: m + b + x, why: 'Added all three numbers. The rate has to MULTIPLY the number of weeks, not join the sum.' },
+      { v: value + m, why: 'One week too many - this is the prediction for week ' + (x + 1) + '.' }
+    ],
     explanation: 'Substitute x = ' + x + ': y = ' + m + '(' + x + ') + ' + b + ' = ' + value + '.'
   });
 }
@@ -1007,7 +1325,12 @@ function areaVolume(rng, diff) {
     return makeMC(rng, {
       section: 'math', domain: D_GEO, skill: 'area-volume', qtype: qt, difficulty: diff,
       stem, correct: h,
-      distractors: [area - w, area / 2, 2 * (w + h), w],
+      distractors: [
+        { v: area - w, why: 'Subtracted the width from the area. Area is a product, so recovering a side means dividing, not subtracting.' },
+        { v: area / 2, why: 'Halved the area. That is the triangle formula; a rectangle has no ½ in it.' },
+        { v: 2 * (w + h), why: 'This is the perimeter, the distance around the outside, not a single side.' },
+        { v: w, why: 'This is the width you were given back again, not the length you were asked for.' }
+      ],
       explanation: 'Length = area ÷ width = ' + area + ' ÷ ' + w + ' = ' + h + '.'
     });
   }
@@ -1021,7 +1344,12 @@ function areaVolume(rng, diff) {
     return makeMC(rng, {
       section: 'math', domain: D_GEO, skill: 'area-volume', qtype: qt, difficulty: diff,
       stem, correct: area,
-      distractors: [base * height, base + height, area / 2, base * height * 2],
+      distractors: [
+        { v: base * height, why: 'Left out the ½. Base × height is the area of the RECTANGLE that encloses this triangle, which is exactly twice as big.' },
+        { v: base + height, why: 'Added the two lengths instead of multiplying them. Area is always a product of two lengths.' },
+        { v: area / 2, why: 'Halved once too often - the ½ has been applied twice.' },
+        { v: base * height * 2, why: 'Doubled where the formula halves.' }
+      ],
       explanation: 'Area = ½ × base × height = ½ × ' + base + ' × ' + height + ' = ' + area + '.'
     });
   }
@@ -1035,7 +1363,12 @@ function areaVolume(rng, diff) {
     return makeMC(rng, {
       section: 'math', domain: D_GEO, skill: 'area-volume', qtype: qt, difficulty: diff,
       stem, correct: h,
-      distractors: [vol / l, vol / w, l * w, vol - l * w],
+      distractors: [
+        { v: vol / l, why: 'Divided by the length only. Volume is length × width × height, so both of the known sides have to come out.' },
+        { v: vol / w, why: 'Divided by the width only. The length still has to be divided out as well.' },
+        { v: l * w, why: 'This is the area of the base, not the height standing on it.' },
+        { v: vol - l * w, why: 'Subtracted the base area from the volume. The three sides multiply, so undoing them means dividing.' }
+      ],
       explanation: 'Height = volume ÷ (length × width) = ' + vol + ' ÷ ' + (l * w) + ' = ' + h + '.'
     });
   }
@@ -1064,7 +1397,11 @@ function areaVolume(rng, diff) {
   return makeMC(rng, {
     section: 'math', domain: D_GEO, skill: 'area-volume', qtype: qt, difficulty: diff,
     stem, correct: (r * r) + 'π',
-    distractors: [(2 * r) + 'π', r + 'π', (4 * r * r) + 'π'],  // circumference / radius / diameter-squared
+    distractors: [
+      { v: (2 * r) + 'π', why: 'This is the CIRCUMFERENCE, 2πr - the distance around the edge, not the space inside.' },
+      { v: r + 'π', why: 'Forgot to square the radius. The formula is πr², not πr.' },
+      { v: (4 * r * r) + 'π', why: 'Squared the DIAMETER instead of the radius, which makes the answer four times too big.' }
+    ],
     explanation: 'A = πr² = π(' + r + ')² = ' + (r * r) + 'π.'
   });
 }
@@ -1096,7 +1433,12 @@ function circleEquation(rng, diff) {
     return makeMC(rng, {
       section: 'math', domain: D_GEO, skill: 'circle-equation', qtype: 'geo-circle-equation', difficulty: diff,
       stem, correct: r,
-      distractors: [r * r, Math.abs(F), 2 * r],   // r² for r is the signature trap here
+      // r² for r is the signature trap here.
+      distractors: [
+        { v: r * r, why: 'This is r², the number the equation actually shows. The radius is its square root, so one more step was needed.' },
+        { v: Math.abs(F), why: 'This is the loose constant from the general form. It only becomes r² after the squares have been completed on both variables.' },
+        { v: 2 * r, why: 'This is the DIAMETER, twice the radius.' }
+      ],
       explanation
     });
   }
@@ -1113,9 +1455,9 @@ function circleEquation(rng, diff) {
     stem,
     correct: '(x' + sx + ')² + (y' + sy + ')² = ' + (r * r),
     distractors: [
-      { v: '(x' + sx + ')² + (y' + sy + ')² = ' + r, why: 'Forgot to square the radius.' },
-      { v: '(x' + fx + ')² + (y' + fy + ')² = ' + (r * r), why: 'Sign-flipped the centre.' },
-      '(x' + fx + ')² + (y' + fy + ')² = ' + r
+      { v: '(x' + sx + ')² + (y' + sy + ')² = ' + r, why: 'The centre is right, but the right-hand side is r rather than r². Standard form always ends in the radius SQUARED.' },
+      { v: '(x' + fx + ')² + (y' + fy + ')² = ' + (r * r), why: 'The signs of the centre are flipped. The form is (x - h)², so a centre at ' + h + ' appears as a MINUS ' + h + ' inside the bracket.' },
+      { v: '(x' + fx + ')² + (y' + fy + ')² = ' + r, why: 'Both mistakes at once - the centre signs are flipped and the radius was not squared.' }
     ],
     explanation: 'Standard form is (x - h)² + (y - k)² = r² with (h, k) = (' + h + ', ' + k +
                  ') and r = ' + r + ', so r² = ' + (r * r) + '.'
@@ -1185,7 +1527,12 @@ function radianConversion(rng, diff) {
       stem: 'An angle measures ' + piFrac(num, den) + ' radians.' +
             '\n\nWhat is the measure of the angle, in degrees?',
       correct: deg,
-      distractors: [deg / 2, deg * 2, 360 - deg, 180 - deg],
+      distractors: [
+        { v: deg / 2, why: 'Half the right answer. Converting radians to degrees multiplies by 180/π - using 90 instead of 180 halves everything.' },
+        { v: deg * 2, why: 'Twice the right answer. 360/π has been used where the conversion factor is 180/π.' },
+        { v: 360 - deg, why: 'This is the reflex angle that completes a full turn, not the angle itself.' },
+        { v: 180 - deg, why: 'This is the supplement of the angle, not the angle.' }
+      ],
       explanation: 'Multiply by 180/π: (' + num + '/' + den + ') × 180 = ' + deg + ' degrees.'
     });
   }
@@ -1197,13 +1544,15 @@ function radianConversion(rng, diff) {
      the same string, and a key with no leading digit gives the generic
      fallback nothing to work from - so the surplus has to come from here. */
   const cands = [];
-  for (const c of [piFrac(rd, rn),        // inverted the fraction
-                   piFrac(rn, rd * 2),    // halved
-                   piFrac(rn * 2, rd),    // doubled
-                   piFrac(rn * 3, rd),
-                   piFrac(rn, rd * 3),
-                   piFrac(rn + 1, rd)]) {
-    if (c !== correct && cands.indexOf(c) === -1) cands.push(c);
+  for (const c of [
+    { v: piFrac(rd, rn), why: 'The fraction is upside down. Converting degrees to radians multiplies by π/180, so ' + deg + '/180 reduces to ' + correct + '.' },
+    { v: piFrac(rn, rd * 2), why: 'Half the right measure - a factor of 2 has been introduced in the denominator.' },
+    { v: piFrac(rn * 2, rd), why: 'Twice the right measure. Check against the landmarks: 180 degrees is π, and 360 is 2π.' },
+    { v: piFrac(rn * 3, rd), why: 'Three times the right measure. Check against the landmarks: 180 degrees is π radians.' },
+    { v: piFrac(rn, rd * 3), why: 'A third of the right measure - an extra 3 has crept into the denominator.' },
+    { v: piFrac(rn + 1, rd), why: 'The denominator is right but the numerator is one too many; reduce ' + deg + '/180 carefully.' }
+  ]) {
+    if (c.v !== correct && !cands.some((x) => x.v === c.v)) cands.push(c);
   }
 
   return makeMC(rng, {
@@ -1250,9 +1599,10 @@ function rightTriangleTrig(rng, diff) {
       section: 'math', domain: D_GEO, skill: 'right-triangle', qtype: 'geo-right-pythagorean', difficulty: diff,
       stem, correct: value,
       distractors: [
-        { v: findHyp ? legA + legB : hyp - legA, why: 'Added or subtracted the sides directly.' },
-        { v: findHyp ? legA * legA + legB * legB : hyp * hyp - legA * legA, why: 'Stopped at the square.' },
-        value + 1, value - 1
+        { v: findHyp ? legA + legB : hyp - legA, why: 'Added or subtracted the sides directly. Pythagoras works on the SQUARES of the sides, and squares do not add like lengths do.' },
+        { v: findHyp ? legA * legA + legB * legB : hyp * hyp - legA * legA, why: 'This is the square of the answer. The square root is still to be taken.' },
+        { v: value + 1, why: 'One too many. Square all three sides and check that the two smaller squares add to the largest.' },
+        { v: value - 1, why: 'One too few. Square all three sides and check that the two smaller squares add to the largest.' }
       ],
       explanation
     });
@@ -1291,9 +1641,16 @@ function rightTriangleTrig(rng, diff) {
           '\n\nWhat is the value of ' + fn + '(' + angle + ') ?',
     correct,
     distractors: [
-      { v: fn === 'sin' ? fmtFraction(adj, hyp) : fn === 'cos' ? fmtFraction(opp, hyp) : fmtFraction(adj, opp), why: 'Swapped sin/cos, or cot for tan.' },
-      { v: fn === 'tan' ? fmtFraction(opp, hyp) : fmtFraction(hyp, fn === 'sin' ? opp : adj), why: 'Reciprocal.' },
-      fmtFraction(opp, adj) === correct ? fmtFraction(hyp, adj) : fmtFraction(opp, adj)
+      { v: fn === 'sin' ? fmtFraction(adj, hyp) : fn === 'cos' ? fmtFraction(opp, hyp) : fmtFraction(adj, opp),
+        why: fn === 'tan'
+          ? 'Adjacent over opposite - the tangent ratio upside down. TOA is Tangent = Opposite over Adjacent.'
+          : 'This is ' + (fn === 'sin' ? 'cos' : 'sin') + '(' + angle + '). The opposite and adjacent sides have been swapped: SOH is sine = opposite/hypotenuse, CAH is cosine = adjacent/hypotenuse.' },
+      { v: fn === 'tan' ? fmtFraction(opp, hyp) : fmtFraction(hyp, fn === 'sin' ? opp : adj),
+        why: fn === 'tan'
+          ? 'Divided by the hypotenuse. Tangent is the one ratio that does not use the hypotenuse at all.'
+          : 'The fraction is upside down. The hypotenuse goes on the BOTTOM for both sine and cosine, which is why neither can ever exceed 1.' },
+      { v: fmtFraction(opp, adj) === correct ? fmtFraction(hyp, adj) : fmtFraction(opp, adj),
+        why: 'A ratio of two real sides of this triangle, but not the pair that ' + fn + ' asks for. Label the sides opposite, adjacent and hypotenuse relative to angle ' + angle + ' first, then pick.' }
     ],
     explanation: 'SOH-CAH-TOA: ' + fn + '(' + angle + ') = ' +
                  (fn === 'sin' ? 'opposite/hypotenuse = ' + opp + '/' + hyp
@@ -1356,7 +1713,12 @@ function angleRelationships(rng, diff) {
       stem: 'In triangle ABC, the measure of angle A is ' + a + ' degrees and the measure of ' +
             'angle B is ' + b + ' degrees.\n\nWhat is the measure of angle C, in degrees?',
       correct: c,
-      distractors: [180 - a, 180 - b, a + b, 360 - a - b],
+      distractors: [
+        { v: 180 - a, why: 'Subtracted only angle A. Both of the given angles have to come off the 180.' },
+        { v: 180 - b, why: 'Subtracted only angle B. Angle A still has to come off as well.' },
+        { v: a + b, why: 'This is the sum of the two given angles. It is the EXTERIOR angle at C, not the interior one.' },
+        { v: 360 - a - b, why: 'Started from 360. A triangle sums to 180; 360 is a quadrilateral or a full turn.' }
+      ],
       explanation: 'The angles of a triangle sum to 180 degrees: 180 - ' + a + ' - ' + b + ' = ' + c + '.'
     });
   }
@@ -1371,7 +1733,15 @@ function angleRelationships(rng, diff) {
             'measures ' + a + ' degrees.\n\nWhat is the measure, in degrees, of an angle that is ' +
             (askSupplement ? 'supplementary to' : 'vertical to') + ' this angle?',
       correct: value,
-      distractors: [askSupplement ? a : 180 - a, 90 - a, 360 - a, a / 2],
+      distractors: [
+        { v: askSupplement ? a : 180 - a,
+          why: askSupplement
+            ? 'This is the original angle. Supplementary means the two ADD to 180, so it is 180 minus this one.'
+            : 'This is the supplement. Vertical angles are equal to each other, not supplementary.' },
+        { v: 90 - a, why: 'Used 90. That is the COMPLEMENT; nothing here says the angles are complementary.' },
+        { v: 360 - a, why: 'Used a full turn. Angles on a straight line make 180, not 360.' },
+        { v: a / 2, why: 'Halved the angle. Neither a vertical nor a supplementary relationship halves anything.' }
+      ],
       explanation: askSupplement
         ? 'Supplementary angles sum to 180 degrees: 180 - ' + a + ' = ' + (180 - a) + '.'
         : 'Vertical angles are congruent, so the measure is also ' + a + ' degrees.'
@@ -1385,7 +1755,12 @@ function angleRelationships(rng, diff) {
     stem: 'In triangle ABC, the measures of angles A and B are ' + a + ' degrees and ' + b +
           ' degrees.\n\nWhat is the measure, in degrees, of the exterior angle at vertex C?',
     correct: ext,
-    distractors: [180 - ext, 180 - a - b, 360 - ext, ext / 2],
+    distractors: [
+      { v: 180 - ext, why: 'This is the INTERIOR angle at C. The exterior angle is its supplement, and equals the other two interior angles added together.' },
+      { v: 180 - a - b, why: 'Same value by a different route - this is the interior angle at C, not the exterior one.' },
+      { v: 360 - ext, why: 'Started from a full turn. The exterior angle theorem uses the two remote interior angles directly.' },
+      { v: ext / 2, why: 'Halved the sum. The exterior angle equals the full sum of the two remote interior angles.' }
+    ],
     explanation: 'An exterior angle equals the sum of the two remote interior angles: ' +
                  a + ' + ' + b + ' = ' + ext + '.'
   });
@@ -1408,13 +1783,17 @@ function angleRelationships(rng, diff) {
    share, and the totals are checked at load rather than asserted in a comment. */
 
 const GENERATORS = [
-  // Algebra - 35
-  { w: 9, d: D_ALG, fn: linearOneVar },
-  { w: 9, d: D_ALG, fn: linearSystem },
-  { w: 5, d: D_ALG, fn: linearFunctionValue },
-  { w: 5, d: D_ALG, fn: linearInterpretation },
+  /* Algebra - 35. The four new entries below do not raise any domain's share;
+     weight was taken from the largest generators in the same domain, because
+     the published split is the thing that must not move. */
+  { w: 7, d: D_ALG, fn: linearOneVar },
+  { w: 7, d: D_ALG, fn: linearSystem },
+  { w: 4, d: D_ALG, fn: linearFunctionValue },
+  { w: 4, d: D_ALG, fn: linearInterpretation },
   { w: 4, d: D_ALG, fn: linearInequality },
   { w: 3, d: D_ALG, fn: systemSolutionCount },
+  { w: 3, d: D_ALG, fn: linearSolutionCount },
+  { w: 3, d: D_ALG, fn: writeLineEquation },
 
   /* Advanced Math - 35. functionNotation is filed here, not under Algebra
      where it used to sit: it asks for f(g(x)), and composite function notation
@@ -1435,13 +1814,15 @@ const GENERATORS = [
   { w: 3, d: D_ADV, fn: functionNotation },
 
   // Problem-Solving and Data Analysis - 15
-  { w: 3, d: D_PSDA, fn: ratesProportion },
-  { w: 4, d: D_PSDA, fn: percentages },
+  { w: 2, d: D_PSDA, fn: ratesProportion },
+  { w: 3, d: D_PSDA, fn: percentages },
   { w: 2, d: D_PSDA, fn: twoWayTable },
   { w: 2, d: D_PSDA, fn: statisticsCenter },
-  { w: 2, d: D_PSDA, fn: statisticsEffect },
+  { w: 1, d: D_PSDA, fn: statisticsEffect },
   { w: 1, d: D_PSDA, fn: scatterModel },
   { w: 1, d: D_PSDA, fn: unitConversion },
+  { w: 2, d: D_PSDA, fn: marginOfError },
+  { w: 1, d: D_PSDA, fn: studyDesign },
 
   // Geometry and Trigonometry - 15
   { w: 3, d: D_GEO, fn: areaVolume },

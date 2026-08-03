@@ -64,6 +64,11 @@ class Game {
     this.scene.paperTexture = this.paper.texture;
 
     this.state = 'title';
+    /* Where BACK out of the analysis screen lands: 'results' after a run,
+       'stats' when a saved review was opened from the history. */
+    this.analysisFrom = 'results';
+    this._reviewPaper = null;     // built on the first TEXT ANALYSIS
+    this.reviewAt = 0;
     this.hold = HOLD.NONE;
     this.introT = 1;              // 1 = fully upright
     this.question = null;
@@ -317,6 +322,12 @@ class Game {
     this.result.reason = reason || 'timeout';
     this.result.mode = this.mode;
     this.result.modeLabel = SATG.menu.modeLabel(this.mode);
+    /* grade() ranks question types but does not judge them, because judging
+       needs the evidence threshold and that lives with the profile. Without
+       this the analysis screen's "WHAT THIS SAYS" section read the two fields,
+       found nothing, and reported "not enough attempts on any single question
+       type" after every run no matter how clear the picture was. */
+    Object.assign(this.result, SATG.profile.rankQTypes(this.result.perQType));
     this.state = 'results';
     this.hold = HOLD.NONE;
     this.transitioning = false;
@@ -374,7 +385,11 @@ class Game {
        answer the player actually gave has to be captured while it still
        exists. */
     this._lastResponse = response;
-    this.bank.recordResult(correct, this.question, response);
+    /* The accumulator is zeroed for the next question rather than at the top of
+       nextQuestion(), because a run can end here - and the time spent on the
+       question that ended it still belongs in the report. */
+    this.bank.recordResult(correct, this.question, response, this._questionTime || 0);
+    this._questionTime = 0;
 
     if (correct) {
       this.cleared++;
@@ -443,8 +458,12 @@ class Game {
       perDomain: b.perDomain, perSkill: b.perSkill,
       perQType: b.perQType, perDifficulty: b.perDifficulty,
       items: b.items,
+      pacing: b.pacing,
       strengths: b.strengths, weaknesses: b.weaknesses,
-      qtypeStrengths: [], qtypeWeaknesses: [],
+      /* Judged by the same rule a graded run uses. These were hard-coded empty,
+         which meant an Infinity run of two hundred questions still reported
+         that it could not tell you anything about any question type. */
+      ...SATG.profile.rankQTypes(b.perQType),
       /* The question the run died on, kept whole.
 
          An Infinity death used to say only that it had happened. The player
@@ -543,12 +562,50 @@ class Game {
   /* Input                                                                 */
   /* ==================================================================== */
 
+  /* The screens that scroll, and the object that owns each one's scroll.
+
+     Kept as one lookup because three separate input paths need it: the wheel,
+     the keyboard, and dragging. */
+  scroller() {
+    if (this.state === 'analysis') return this.analysis.card ? null : this.analysis;
+    if (this.state === 'stats') return this.stats;
+    if (this.state === 'types') return this.typePicker;
+    return null;
+  }
+
   onPointerMove(u, v, dx, dy) {
     const pu = this.mouse.u, pv = this.mouse.v;
     this.mouse.u = u;
     this.mouse.v = v;
 
-    if (this.state === 'exam' && this.hold === HOLD.PAPER) {
+    /* Drag to scroll.
+
+       A phone has no wheel and no arrow keys, so without this the analysis
+       report, the stats page and the type picker are all readable only as far
+       as their first screenful - every one of them is several screens long.
+       It costs nothing on a mouse, where dragging a report is also the natural
+       thing to try.
+
+       Content coordinates, not CSS pixels: v is a 0..1 fraction of the canvas,
+       so multiplying by the screen's own height makes a drag move the content
+       by exactly the distance the finger travelled. */
+    const sc = this.scroller();
+    if (sc && this.mouse.down) {
+      const moved = Math.abs(v - pv) + Math.abs(u - pu);
+      this._dragScrolled = (this._dragScrolled || 0) + moved;
+      if (this._dragScrolled > 0.004) {
+        this.mouse.dragging = true;
+        sc.scrollBy(-(v - pv) * sc.H);
+      }
+      return;
+    }
+
+    /* Panning a zoomed sheet. The review paper needs this as much as the live
+       one does - it is the same sheet at the same zoom, and on a phone the only
+       way to read a magnified passage is to drag it. */
+    const onSheet = (this.state === 'exam' && this.hold === HOLD.PAPER) ||
+                    this.state === 'paperReview';
+    if (onSheet) {
       if (this.mouse.down) {
         this._paperMoved += Math.abs(u - pu) + Math.abs(v - pv);
         if (this.paperZoom > 1.01) {
@@ -589,9 +646,30 @@ class Game {
   onPointerDown(u, v) {
     SATG.audio.init();
     SATG.audio.resume();
+    /* No browser will let a sound play before a gesture, so the title card is
+       silent until this happens - there is nowhere earlier to put it. */
+    SATG.music.unlock();
     this.mouse.down = true;
     this.mouse.dragging = false;
+    this._dragScrolled = 0;
 
+    /* On a screen that scrolls, acting on pointer DOWN and dragging to scroll
+       are the same gesture starting - so the action waits for the release and
+       only happens if the finger did not travel. Without this, every attempt to
+       scroll the report on a phone opens whatever happened to be under the
+       thumb when it landed. */
+    if (this.scroller() || this.state === 'paperReview') {
+      this._pendingClick = { u, v };
+      this._paperMoved = 0;
+      return;
+    }
+
+    this.dispatchClick(u, v);
+  }
+
+  /* Where the pointer-down actions used to live. Called immediately on screens
+     that do not scroll, and on release for the ones that do. */
+  dispatchClick(u, v) {
     switch (this.state) {
       case 'title': {
         const i = this.title.hitTest(u, v);
@@ -615,13 +693,43 @@ class Game {
       case 'analysis':
         this.activateAnalysis(this.analysis.hitTest(u, v));
         return;
+      case 'paperReview':
+        this.reviewPointerDown(u, v);
+        return;
       case 'types':
         this.activateTypePicker(this.typePicker.hitTest(u, v));
         return;
       case 'stats': {
         const h = this.stats.hitTest(u, v);
+        /* An armed DELETE is cancelled by any click that is not the confirm
+           itself - including a click on nothing. That is what makes the second
+           click a decision rather than a formality. */
+        if (!h || h.kind !== 'review-delete') this.stats.disarmDelete();
         if (!h) return;
         if (h.kind === 'back') { this.closeStats(); return; }
+        // History targets.
+        if (h.kind === 'combined') {
+          this.stats.fx.press('combined');
+          SATG.audio.click();
+          this.openCombinedReview();
+          return;
+        }
+        if (h.kind === 'review-open') {
+          this.stats.fx.press('rv' + h.at);
+          SATG.audio.click();
+          this.openSavedReview(h.at);
+          return;
+        }
+        if (h.kind === 'review-delete') {
+          const what = this.stats.armDelete(h.at);
+          /* A sheet being put down, not the gunshot. The shot means the run is
+             over and is the loudest thing in the game; firing it because a
+             player tidied their history would read as something having gone
+             badly wrong. */
+          if (what === 'deleted') SATG.audio.paperRustle(true);
+          else SATG.audio.click();
+          return;
+        }
         if (h.kind === 'tab') { if (this.stats.setTab(h.index)) SATG.audio.click(); return; }
         // Logbook targets.
         if (h.kind === 'chapter') { this.stats.toggleChapter(h.skill); SATG.audio.click(); return; }
@@ -685,6 +793,24 @@ class Game {
     this.mouse.down = false;
     this.mouse.dragging = false;
 
+    /* A deferred click on a scrolling screen. Uses the position the finger came
+       DOWN at, not where it left: a thumb rolls a few pixels on the way up, and
+       the row the player aimed at is the one they touched. */
+    const pending = this._pendingClick;
+    this._pendingClick = null;
+    if (wasDown && pending) {
+      /* Two accumulators because there are two gestures this has to tell a tap
+         apart from: dragging a report to scroll it, and dragging a zoomed sheet
+         to pan it. Either one disqualifies the release from being a click. */
+      const dragged = (this._dragScrolled || 0) > 0.004 ||
+                      (this._paperMoved || 0) > 0.012;
+      this._dragScrolled = 0;
+      this._paperMoved = 0;
+      if (!dragged) this.dispatchClick(pending.u, pending.v);
+      return;
+    }
+    this._dragScrolled = 0;
+
     // A release that began under the open menu must not also answer a question.
     if (!wasDown || this.state !== 'exam' || this.hold !== HOLD.PAPER ||
         this.escMenu.open) {
@@ -710,6 +836,10 @@ class Game {
     } else if (hit.type === 'input') {
       this.paper.inputFocused = true;
       SATG.audio.click(1200);
+      /* On a device with no physical keyboard this is the only way the answer
+         can be typed at all, so it is offered whenever the pointer is coarse
+         rather than being hidden behind a setting. */
+      if (SATG.touch.isTouch()) this.openGridKeyboard();
     } else if (hit.type === 'prev') {
       this.goQuestion(-1);
     } else if (hit.type === 'next') {
@@ -726,11 +856,46 @@ class Game {
     }
   }
 
+  /* Put a real text field over the answer box so the phone offers a keyboard.
+
+     Every character still goes through paper.typeChar, which is what enforces
+     the grid-in rules - so a phone keyboard offering letters cannot get one
+     into the answer any more than a physical one can. */
+  openGridKeyboard() {
+    const p = this.paper;
+    if (!p.question || p.question.format !== 'grid' || !p.hitInput) return false;
+    const sheet = this.paperRect();
+    const { W, H } = SATG.PAPER_SIZE;
+    const box = p.hitInput;
+    const rect = {
+      x: sheet.x + (box.x / W) * sheet.w,
+      y: sheet.y + (box.y / H) * sheet.h,
+      w: (box.w / W) * sheet.w,
+      h: (box.h / H) * sheet.h
+    };
+    SATG.touch.openNumericInput(p.typed, rect, (value) => {
+      /* Retype the whole value through the paper rather than assigning it, so
+         the length cap and the character filter both still apply. */
+      p.typed = '';
+      for (const ch of String(value)) p.typeChar(ch);
+      p.dirty = true;
+    }, () => {
+      p.inputFocused = false;
+      p.dirty = true;
+    });
+    return true;
+  }
+
   onWheel(delta) {
     /* The report is long enough that a wheel is the natural way through it,
        and a scrollable page that ignores the wheel reads as broken. */
     if (this.state === 'analysis') {
       if (!this.analysis.card) this.analysis.scrollBy(delta > 0 ? 60 : -60);
+      return;
+    }
+    if (this.state === 'paperReview') {
+      // Same wheel-to-zoom the held sheet has, because it is the same reading.
+      this.zoomPaper(delta, this.mouse.u, this.mouse.v);
       return;
     }
     if (this.state === 'stats') { this.stats.scrollBy(delta > 0 ? 60 : -60); return; }
@@ -811,6 +976,7 @@ class Game {
     const key = e.key;
     SATG.audio.init();
     SATG.audio.resume();
+    SATG.music.unlock();
 
     if (this.state === 'title') {
       if (key === 'ArrowUp' || key === 'w' || key === 'W') { if (this.title.move(-1)) SATG.audio.click(); }
@@ -846,13 +1012,41 @@ class Game {
       return;
     }
 
+    if (this.state === 'paperReview') {
+      if (key === 'Escape' || key === 'Backspace') {
+        if (key === 'Backspace') e.preventDefault();
+        /* ESC turns the sheet back over before it puts it down - the same rule
+           the analysis card follows, for the same reason. */
+        if (this.reviewPaper.reviewBack) {
+          this.reviewPaper.flipReview();
+          SATG.audio.paperRustle(true);
+          return;
+        }
+        this.closeTextAnalysis();
+        return;
+      }
+      if (key === 'ArrowLeft'  || key === 'a' || key === 'A') { this.goReview(-1); return; }
+      if (key === 'ArrowRight' || key === 'd' || key === 'D') { this.goReview(1); return; }
+      if (key === 'i' || key === 'I' || key === 'Enter' || key === ' ') {
+        SATG.audio.paperRustle(!this.reviewPaper.reviewBack);
+        this.reviewPaper.flipReview();
+        return;
+      }
+      if (key === 'Home') { this.jumpReview(0); return; }
+      if (key === 'End') {
+        this.jumpReview(((this.reviewPaper.reviewItems) || []).length - 1);
+        return;
+      }
+      return;
+    }
+
     if (this.state === 'analysis') {
       if (key === 'Escape' || key === 'Backspace') {
         if (key === 'Backspace') e.preventDefault();
         /* ESC closes the open card first and only then leaves the report.
            Dismissing both at once would throw away the reader's scroll
            position for one keypress they meant as "close this panel". */
-        if (!this.analysis.closeCard()) this.state = 'results';
+        if (!this.analysis.closeCard()) this.leaveAnalysis();
         SATG.audio.click();
         return;
       }
@@ -891,6 +1085,9 @@ class Game {
     if (this.state === 'stats') {
       if (key === 'Escape' || key === 'Backspace') {
         if (key === 'Backspace') e.preventDefault();
+        /* ESC cancels an armed delete before it closes the page, the same way
+           it closes an open card before leaving the report. */
+        if (this.stats.disarmDelete()) { SATG.audio.click(); return; }
         this.closeStats(); return;
       }
       if (key === 'ArrowLeft'  || key === 'a' || key === 'A') {
@@ -1146,18 +1343,19 @@ class Game {
      scored one: a section score computed from twelve questions of a single type
      would be a number with no meaning, and printing it would undo the care
      taken everywhere else to only claim what the evidence supports. */
+  /* The logbook's PRACTICE ONLY THIS QUESTION TYPE button.
+
+     Routed through startDrill rather than repeating it. It used to build its
+     own mode with kind INFINITY - which meant isDrill was false for anything
+     launched from the logbook, so a drill started there killed the player on
+     the first wrong answer and showed the Infinity counter instead of the
+     running score. Two entry points to one mode, and only one of them was
+     setting the flag that defines it. */
   startTypePractice(qtypeId) {
-    const sk = SATG.taxonomy.skillOf(qtypeId);
-    if (!sk) return;
-    const q = SATG.taxonomy.qtype(qtypeId);
+    if (!SATG.taxonomy.skillOf(qtypeId)) return;
     SATG.account.show(false);
     SATG.cloud.hidePanel();
-    this.startRun(false, {
-      kind: SATG.menu.KIND.INFINITY,
-      section: sk.section,
-      qtype: qtypeId,
-      label: 'DRILL - ' + (q ? q.label.toUpperCase() : qtypeId)
-    });
+    this.startDrill(qtypeId);
   }
 
   /* Like the feedback page: a menu page, not a scene change, so no fade. */
@@ -1241,6 +1439,7 @@ class Game {
 
   toAnalysis() {
     this.analysis.reset(this.result);
+    this.analysisFrom = 'results';
     this.state = 'analysis';
   }
 
@@ -1265,10 +1464,17 @@ class Game {
         SATG.audio.click();
         this.analysis.save();
         return;
+      case 'text':
+        this.analysis.press('text');
+        this.openTextAnalysis();
+        return;
       case 'open-print':
         this.analysis.press('open-print');
         SATG.audio.click();
-        SATG.printDoc.open(this.result);
+        /* Whatever the screen is showing, not whatever ran last. Reading
+           this.result printed the previous run's document when the report on
+           screen had been reopened from the history. */
+        SATG.printDoc.open(this.analysis.data);
         return;
       case 'item':
         SATG.audio.click();
@@ -1288,9 +1494,140 @@ class Game {
       case 'back':
         this.analysis.press('back');
         SATG.audio.click();
-        if (!this.analysis.closeCard()) this.state = 'results';
+        if (!this.analysis.closeCard()) this.leaveAnalysis();
         return;
     }
+  }
+
+  /* BACK out of the report goes wherever the report was opened from.
+
+     Reached from a finished run it returns to the score screen; reached from
+     the history it returns to STATS. Sending both to the score screen would
+     show someone browsing old reviews the result of a run they finished an hour
+     ago, which reads as the game having lost their place. */
+  leaveAnalysis() {
+    if (this.analysisFrom === 'stats') { this.restoreStats(); return; }
+    this.state = 'results';
+  }
+
+  /* ==================================================================== */
+  /* TEXT ANALYSIS - the paper, afterwards                                 */
+  /* ==================================================================== */
+
+  /* A second sheet, built the first time anybody asks for one.
+
+     Not the exam paper. That one is bound into the 3D scene as the texture on
+     the desk and is the live sheet a resumed run writes back onto; borrowing it
+     to display a finished question would put a review of last week's test on
+     the table in front of a player who is still sitting an exam. */
+  get reviewPaper() {
+    if (!this._reviewPaper) this._reviewPaper = new SATG.Paper(this.pipeline.gl);
+    return this._reviewPaper;
+  }
+
+  openTextAnalysis() {
+    const items = ((this.analysis.data && this.analysis.data.items) || [])
+      .filter((i) => i && i.paper);
+    if (!items.length) return false;
+    this.reviewAt = 0;
+    this.reviewPaper.setReview(items[0], 0, items);
+    this.resetPaperView();
+    this.state = 'paperReview';
+    SATG.audio.paperRustle(false);
+    return true;
+  }
+
+  goReview(d) {
+    const p = this.reviewPaper;
+    const items = p.reviewItems || [];
+    const next = clamp(this.reviewAt + d, 0, items.length - 1);
+    if (next === this.reviewAt) return false;
+    this.reviewAt = next;
+    p.fx.press(d > 0 ? 'next' : 'prev');
+    p.setReview(items[next], next, items);
+    SATG.audio.paperRustle(d > 0);
+    return true;
+  }
+
+  jumpReview(i) {
+    const p = this.reviewPaper;
+    const items = p.reviewItems || [];
+    if (i < 0 || i >= items.length || i === this.reviewAt) return false;
+    this.reviewAt = i;
+    p.setReview(items[i], i, items);
+    SATG.audio.click(1400);
+    return true;
+  }
+
+  closeTextAnalysis() {
+    this.reviewPaper.clearReview();
+    this.resetPaperView();
+    SATG.audio.paperRustle(true);
+    this.state = 'analysis';
+  }
+
+  /* Click anywhere on the review sheet. Same local-coordinate conversion the
+     held sheet uses during a run, so zooming and panning behave identically. */
+  reviewPointerDown(u, v) {
+    const local = rectToLocal(this.paperRect(), u, v);
+    if (!local) return;
+    const hit = this.reviewPaper.hitTest(local.u, local.v);
+    if (!hit) return;
+    if (hit.type === 'info') {
+      SATG.audio.paperRustle(!this.reviewPaper.reviewBack);
+      this.reviewPaper.flipReview();
+      return;
+    }
+    if (hit.type === 'prev') { this.goReview(-1); return; }
+    if (hit.type === 'next') { this.goReview(1); return; }
+    if (hit.type === 'reviewJump') { this.jumpReview(hit.index); return; }
+  }
+
+  /* Back into STATS without resetting it - the tab and scroll position are
+     where the player left them. openStats() is this plus a reset, for arriving
+     from the title menu. */
+  restoreStats() {
+    SATG.account.load();
+    SATG.account.onChange = () => { this.stats.refresh(); };
+    this.stats.refresh();
+    this.state = 'stats';
+    const spot = this.stats.buttonSpot();
+    SATG.account.place(spot.u, spot.v);
+    SATG.account.show(true);
+    SATG.cloud.showPanel(spot.u, Math.min(0.92, spot.v + 0.06),
+                         () => { this.stats.refresh(); });
+  }
+
+  /* Open a report over the top of STATS.
+
+     The sign-in and cloud panels are real DOM elements sitting over the canvas,
+     and they do not belong over a report - an overlay that is merely invisible
+     still swallows the clicks meant for what is behind it. So they are taken
+     down here and put back by restoreStats(). */
+  toAnalysisFrom(result, opts) {
+    if (!result) return false;
+    SATG.account.show(false);
+    SATG.cloud.hidePanel();
+    this.analysis.reset(result, opts);
+    this.analysisFrom = 'stats';
+    this.state = 'analysis';
+    return true;
+  }
+
+  openSavedReview(at) {
+    const stored = SATG.profile.review(at);
+    const result = SATG.profile.reviewAsResult(stored);
+    // Already in the record: offering to save it again would store a duplicate.
+    return this.toAnalysisFrom(result, { saved: true, note: 'FROM YOUR HISTORY.' });
+  }
+
+  /* The lifetime report. Not savable - it is a view OF the record, so saving it
+     into the record would be a copy that goes stale the next time you play -
+     and not printable, because the printable document is built around one
+     sitting and there is no such thing for "everything". */
+  openCombinedReview() {
+    return this.toAnalysisFrom(SATG.profile.combined(),
+                               { saveable: false, printable: false, depth: 'detailed' });
   }
 
   /* ==================================================================== */
@@ -1300,6 +1637,12 @@ class Game {
   update(dt) {
     this.fader.update(dt);
     this.pipeline.time += dt;
+
+    /* Music follows the screen. Asked every frame rather than pushed from the
+       twenty-odd places that assign this.state, because one of those would
+       eventually be added without the push and the menu track would play
+       through an exam. Costs a property lookup and a comparison. */
+    SATG.music.forState(this.state);
 
     const panic = this.state === 'exam' && this.question
       ? clamp(1 - this.timeLeft / QB.PANIC_SECONDS, 0, 1)
@@ -1341,6 +1684,11 @@ class Game {
 
       case 'analysis':
         this.analysis.update(dt);
+        break;
+
+      case 'paperReview':
+        // Keeps the arrow presses animating; the sheet has no caret to blink.
+        this.reviewPaper.update(dt);
         break;
 
       case 'types':
@@ -1405,7 +1753,16 @@ class Game {
     // The module owns the clock on a module test, so the module is where the
     // remaining time has to be written back - otherwise paging between
     // questions reloads the module's stale timeLeft and the clock jumps back.
-    if (this.form && this.form.module) this.form.module.timeLeft = this.timeLeft;
+    if (this.form && this.form.module) {
+      this.form.module.timeLeft = this.timeLeft;
+      /* And charge the same second to whichever question is on screen, so the
+         report can say where the time actually went. Deliberately in the same
+         place as the clock: any path that advances one advances the other, and
+         a question can never accrue time the module did not. */
+      this.form.module.spend(dt);
+    } else if (this.isInfinity) {
+      this._questionTime = (this._questionTime || 0) + dt;
+    }
 
     // The last ten seconds: the cue starts and swells until the shot.
     if (this.timeLeft <= QB.PANIC_SECONDS) {
@@ -1549,6 +1906,17 @@ class Game {
         this.analysis.resize(P.compRT.width, P.compRT.height, P.uiScale);
         this.analysis.render();
         P.drawOverlay(this.analysis.texture, { x: 0, y: 0, w: 1, h: 1 });
+        this.renderHudCursorOnly(P);
+        break;
+
+      case 'paperReview':
+        /* Drawn exactly as the held sheet is during a run - same scrim, same
+           rect, same zoom - because it is the same object being read. The room
+           stays behind it rather than being blacked out: this is a sheet being
+           looked at, not a menu. */
+        this.reviewPaper.render();
+        P.fillRect({ x: 0, y: 0, w: 1, h: 1 }, [0, 0, 0, 0.72]);
+        P.drawOverlay(this.reviewPaper.texture, this.paperRect());
         this.renderHudCursorOnly(P);
         break;
 

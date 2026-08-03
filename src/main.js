@@ -116,6 +116,23 @@ function boot() {
     game.onWheel(e.deltaY);
   }, { passive: false });
 
+  /* Pinch is the wheel, on a device that has no wheel. Routed through the same
+     handler so zooming means one thing, implemented once. */
+  SATG.touch.attachPinch(canvas, (dir, at) => {
+    game.mouse.u = at.u;
+    game.mouse.v = at.v;
+    game.onWheel(dir * 100);
+  });
+
+  /* An orientation change resizes in two stages on most phones, and the first
+     one reports the OLD dimensions. Resizing again on the next frame is what
+     stops the game being letterboxed into half the screen until something else
+     happens to trigger a resize. */
+  global.addEventListener('orientationchange', () => {
+    pipeline.resize();
+    requestAnimationFrame(() => pipeline.resize());
+  });
+
   // No context menu - a right click in the middle of an exam is never wanted.
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 

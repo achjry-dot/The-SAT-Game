@@ -462,6 +462,7 @@ function setMasterVolume(v) {
   // hard-coded 0.85 that setMuted used to snap back to.
   state.volume = clamp(v, 0, 1);
   if (state.master && !state.muted) state.master.gain.value = state.volume;
+  musicFollow();
 }
 
 function getMasterVolume() { return state.volume; }
@@ -469,6 +470,24 @@ function getMasterVolume() { return state.volume; }
 function setMuted(m) {
   state.muted = !!m;
   if (state.master) state.master.gain.value = m ? 0 : state.volume;
+  musicFollow();
+}
+
+/* Music is the one thing in the game that is not synthesised here, so it hangs
+   off an <audio> element and cannot be levelled by the master gain the way
+   every cue above is. Pushing to it means the SETTINGS slider moves the whole
+   mix, rather than everything except the part the player notices most.
+   Guarded because music.js loads after this file and is optional. */
+function musicFollow() {
+  if (SATG.music && SATG.music.refresh) SATG.music.refresh();
+}
+
+/* The bus music.js attaches to on platforms that ignore an element's own
+   volume - see the header of audio/music.js for why that path exists at all.
+   Null until the first gesture has built the graph. */
+function musicBus() {
+  if (!state.ctx) init();
+  return state.ctx && state.master ? { ctx: state.ctx, master: state.master } : null;
 }
 
 function isMuted() { return state.muted; }
@@ -491,7 +510,7 @@ SATG.audio = {
   startAmbience, stopAmbience,
   startTension, stopTension, setTensionIntensity,
   setMasterVolume, getMasterVolume, setMuted, isMuted,
-  setGunshotVolume, getGunshotVolume,
+  setGunshotVolume, getGunshotVolume, musicBus,
   get ready() { return state.ready; },
   get tensionActive() { return !!state.tension; }
 };

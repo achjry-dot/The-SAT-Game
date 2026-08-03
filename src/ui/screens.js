@@ -910,9 +910,33 @@ class Fader {
   get busy() { return this.value !== this.target; }
 }
 
+/* Each domain's share of a real digital SAT, as a percentage of all 98
+   questions - not of its own section.
+
+   College Board publishes the split within each section: Math is Algebra 35 /
+   Advanced 35 / Problem-Solving 15 / Geometry 15, and Reading and Writing is
+   Craft 28 / Information 26 / Conventions 26 / Expression 20. A form is 54 R&W
+   questions and 44 Math, so the whole-test share is the section share times
+   that section's share of the form - 54/98 and 44/98.
+
+   These are the same published figures the two generator registries already
+   target, converted once. The registries assert their own totals at load, so if
+   either split is ever changed there, this is the table to change with it. */
+const RW_SHARE = 54 / 98, MATH_SHARE = 44 / 98;
+const REAL_DOMAIN_MIX = {
+  'Algebra': Math.round(35 * MATH_SHARE),
+  'Advanced Math': Math.round(35 * MATH_SHARE),
+  'Problem-Solving and Data Analysis': Math.round(15 * MATH_SHARE),
+  'Geometry and Trigonometry': Math.round(15 * MATH_SHARE),
+  'Craft and Structure': Math.round(28 * RW_SHARE),
+  'Information and Ideas': Math.round(26 * RW_SHARE),
+  'Standard English Conventions': Math.round(26 * RW_SHARE),
+  'Expression of Ideas': Math.round(20 * RW_SHARE)
+};
+
 SATG.screens = {
   TitleScreen, LoseScreen, Hud, Reticle, Fader, ScreenCanvas,
-  LOSE_ITEMS
+  LOSE_ITEMS, REAL_DOMAIN_MIX
 };
 
 })(window);
