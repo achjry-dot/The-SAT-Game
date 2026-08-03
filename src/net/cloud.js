@@ -364,24 +364,32 @@ function init() {
 const PANEL_ID = 'satg-cloud-panel';
 let panel = null;
 
+/* Sized to sit inside the band the stats page reserves for it, in the same
+   letterspaced monospace the rest of that page is set in. The field is
+   deliberately tall - it is the one thing on this screen anybody has to type
+   into, often on a phone, and the old seven-pixel padding made a target
+   smaller than a thumb. */
 function panelCSS() {
   return '#' + PANEL_ID + '{position:fixed;z-index:60;transform:translate(-50%,0);' +
-    'font:12px/1.5 "Courier New",monospace;color:#d9d2c4;text-align:center;' +
-    'letter-spacing:1px;text-transform:uppercase;width:min(92vw,420px)}' +
-    '#' + PANEL_ID + ' form{display:flex;gap:6px;justify-content:center}' +
+    'font:14px/1.4 "Courier New",monospace;color:#d9d2c4;text-align:center;' +
+    'letter-spacing:1px;text-transform:uppercase;width:min(92vw,720px)}' +
+    '#' + PANEL_ID + ' form{display:flex;gap:8px;justify-content:center;align-items:stretch}' +
     '#' + PANEL_ID + ' input{flex:1 1 auto;min-width:0;background:#0d0b09;' +
-    'border:1px solid #4f4a42;color:#d9d2c4;font:inherit;text-transform:none;' +
-    'padding:7px 9px;border-radius:2px}' +
-    '#' + PANEL_ID + ' input:focus{outline:none;border-color:#8e8779}' +
-    '#' + PANEL_ID + ' button{background:#191713;border:1px solid #4f4a42;' +
-    'color:#d9d2c4;font:inherit;letter-spacing:1px;text-transform:uppercase;' +
-    'padding:7px 12px;cursor:pointer;border-radius:2px;white-space:nowrap}' +
-    '#' + PANEL_ID + ' button:hover{background:#241f1a}' +
+    'border:1px solid #6a6459;color:#d9d2c4;font:inherit;text-transform:none;' +
+    'letter-spacing:1px;padding:11px 12px;border-radius:2px}' +
+    '#' + PANEL_ID + ' input::placeholder{color:#5c574e}' +
+    '#' + PANEL_ID + ' input:focus{outline:none;border-color:#d9d2c4;background:#141110}' +
+    '#' + PANEL_ID + ' button{background:#191713;border:1px solid #6a6459;' +
+    'color:#d9d2c4;font:inherit;letter-spacing:2px;text-transform:uppercase;' +
+    'padding:11px 18px;cursor:pointer;border-radius:2px;white-space:nowrap}' +
+    '#' + PANEL_ID + ' button:hover{background:#2b251f;border-color:#d9d2c4}' +
     '#' + PANEL_ID + ' button:focus-visible{outline:2px solid #6fb7d8;outline-offset:2px}' +
-    '#' + PANEL_ID + ' p{margin:7px 0 0;color:#8e8779;font-size:11px}';
+    '#' + PANEL_ID + ' p{margin:6px 0 0;color:#8e8779;font-size:11px;letter-spacing:1px}' +
+    /* Narrow windows: the button under the field rather than crushed beside it. */
+    '@media (max-width:520px){#' + PANEL_ID + ' form{flex-direction:column}}';
 }
 
-function showPanel(u, v, onChange) {
+function showPanel(u, v, onChange, wFrac) {
   hidePanel();
   if (!configured()) return null;
   const d = global.document;
@@ -443,15 +451,20 @@ function showPanel(u, v, onChange) {
      would also be an answer keystroke. */
   panel.addEventListener('keydown', (e) => e.stopPropagation());
 
-  place(u, v);
+  place(u, v, wFrac);
   d.body.appendChild(panel);
   return panel;
 }
 
-function place(u, v) {
+/* `wFrac` is the width the caller wants, as a fraction of the viewport. The
+   stats page passes the width of the band it drew, so the form fills it
+   exactly rather than floating at some fixed pixel width inside it. Omitted,
+   the stylesheet's own width stands. */
+function place(u, v, wFrac) {
   if (!panel) return;
   panel.style.left = (u * 100) + '%';
   panel.style.top = (v * 100) + '%';
+  if (wFrac > 0) panel.style.width = (wFrac * 100) + 'vw';
 }
 
 function hidePanel() {
@@ -464,6 +477,10 @@ function hidePanel() {
 SATG.cloud = {
   init, configured, sendLink, signOut, sync, statusText,
   showPanel, hidePanel, place,
+  /* So a caller repositioning the panel every frame can tell the difference
+     between "move it" and "build it". Rebuilding replaces the input element,
+     which drops focus and whatever was half-typed into it. */
+  get panelVisible() { return !!panel; },
   consumeRedirect, refresh, loadUser,
   get session() { return session; },
   get signedIn() { return !!session; },

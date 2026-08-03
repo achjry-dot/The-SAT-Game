@@ -193,13 +193,27 @@ function signOut() {
 function statusText() {
   if (state.user) return 'SIGNED IN AS ' + String(state.user.name).toUpperCase();
 
-  /* The two blocking conditions are checked FIRST, before status.
+  /* Cloud save answers first, because it is the sign-in this build actually
+     has. Google's client id is optional and, when it is missing, saying so is
+     addressed to whoever is editing config.js rather than to the person
+     trying to play - and it is addressed to them right next to a working
+     email form, which makes it read as a fault. Cloud save signed in is the
+     honest headline; cloud save available and unused is left blank, because
+     the panel underneath is already asking. */
+  if (SATG.cloud && SATG.cloud.configured()) {
+    if (SATG.cloud.signedIn) {
+      return 'SIGNED IN AS ' + String(SATG.cloud.email || 'PLAYER').toUpperCase();
+    }
+    return '';
+  }
 
-     status is 'idle' until load() runs, and load() does not run until the
-     stats page is opened - so reading status alone told an unconfigured build
-     to promise "SIGN IN TO KEEP A RECORD" next to a button that was never
-     going to appear. Whether a client id exists and whether the page is on
-     http are both knowable at any moment, so answer from those. */
+  /* No cloud save either. Now the configuration notes are the useful thing to
+     print, because nothing on this page can sign anybody in.
+
+     Both blocking conditions are checked before `status`: that is 'idle'
+     until load() runs, and load() does not run until this page is opened, so
+     reading status alone told an unconfigured build to promise "SIGN IN TO
+     KEEP A RECORD" next to a button that was never going to appear. */
   if (!clientId())
     return 'SIGN-IN IS NOT CONFIGURED. ADD A GOOGLE CLIENT ID TO src/config.js';
   if (!originSupported())

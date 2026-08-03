@@ -1505,10 +1505,40 @@ class Game {
     const spot = this.stats.buttonSpot();
     SATG.account.place(spot.u, spot.v);
     SATG.account.show(true);
-    /* Cloud save shares the sign-in corner. It only appears once configured, so
-       an unconfigured build looks exactly as it did before. */
-    SATG.cloud.showPanel(spot.u, Math.min(0.92, spot.v + 0.06),
-                         () => { this.stats.refresh(); });
+    /* The email form is NOT placed here. It goes in a band the stats page
+       draws for it, and where that band lands is only known once the page has
+       been laid out - so syncCloudPanel(), on the next frame, both creates
+       and positions it. */
+  }
+
+  /* Keep the email form sitting in the band the stats page draws for it.
+
+     Driven from the frame loop rather than set once when the page opens,
+     because the band's position is a RESULT of laying the page out - it moves
+     with the window, with the UI scale, and with how many rows the tab strip
+     wrapped onto. Asking the screen where it ended up is the only answer that
+     stays true.
+
+     The panel is created and destroyed here too, and only on the frames where
+     that actually changes: showPanel() tears down whatever is there first, so
+     calling it every frame would rebuild the input sixty times a second and
+     the player could never finish typing an address into it. */
+  syncCloudPanel() {
+    const spot = this.stats.signInSpot();
+    if (!spot) {
+      SATG.cloud.hidePanel();
+      return;
+    }
+    /* The panel's contents differ either side of signing in - an address
+       field, or SYNC NOW and SIGN OUT - so it has to be rebuilt when that
+       flips. Only then: see above. */
+    const inNow = SATG.cloud.signedIn;
+    if (!SATG.cloud.panelVisible || this._panelSignedIn !== inNow) {
+      this._panelSignedIn = inNow;
+      SATG.cloud.showPanel(spot.u, spot.v, () => { this.stats.refresh(); }, spot.w);
+    } else {
+      SATG.cloud.place(spot.u, spot.v, spot.w);
+    }
   }
 
   closeStats() {
@@ -1777,8 +1807,7 @@ class Game {
     const spot = this.stats.buttonSpot();
     SATG.account.place(spot.u, spot.v);
     SATG.account.show(true);
-    SATG.cloud.showPanel(spot.u, Math.min(0.92, spot.v + 0.06),
-                         () => { this.stats.refresh(); });
+    // The email form places itself from the frame loop; see syncCloudPanel().
   }
 
   /* Open a report over the top of STATS.
@@ -1908,6 +1937,7 @@ class Game {
 
       case 'stats':
         this.stats.update(dt);
+        this.syncCloudPanel();
         break;
     }
 

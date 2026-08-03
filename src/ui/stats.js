@@ -255,6 +255,71 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
     });
     y += F.lineHeight(tabS) + 16 * s;
 
+    /* ---- the sign-in band.
+
+       Page chrome, not content, so it lives HERE - between the pinned tab
+       strip and the scrolling body - rather than as the first block inside
+       the scroll. It has to: the email field is a real DOM element sitting
+       over the canvas, and an element positioned against something that
+       scrolls underneath it comes adrift the moment anybody scrolls.
+
+       The band draws its own two lines of type and leaves a gap in the middle
+       at exactly the height the form needs; cloud.js is told where that gap
+       is in screen coordinates and puts the form in it. */
+    this._signIn = null;
+    if (SATG.cloud && SATG.cloud.configured()) {
+      const inNow = SATG.cloud.signedIn;
+      const slh = F.lineHeight(small);
+      const formH = Math.round(46 * s);
+      const bandH = slh + 8 * s + formH + 6 * s + slh + 14 * s;
+
+      ctx.fillStyle = PANEL;
+      ctx.fillRect(left, y, avail, bandH);
+
+      /* Both lines are fitted to the band rather than drawn at `small` and
+         hoped for. The lower one is sixty-four characters and ran off the
+         right-hand edge on any window under about eight hundred wide - which
+         is most phones, and the whole point of the sentence is to reassure
+         someone who has not signed in that their results are safe. */
+      const inner = avail - 20 * s;
+      const head = inNow ? 'SIGNED IN - YOUR SCORES ARE SAVED'
+                         : 'SIGN IN TO SAVE YOUR SCORE';
+      /* Two lengths, and the long one is only used when it actually fits.
+
+         fitScale stops at its floor and returns it whether or not the string
+         fits, because a bitmap font below 1x resamples into mush - so on a
+         narrow window the sixty-four character version was drawn at the floor
+         and simply ran off the edge. Measuring at the floor and picking the
+         shorter sentence is the only thing that ends with a whole line on
+         screen at every width. */
+      const footLong = inNow
+        ? 'THIS BROWSER\'S RECORD AND YOUR ACCOUNT ARE KEPT IN STEP.'
+        : 'RESULTS BELOW ARE THIS BROWSER\'S RECORD AND ARE KEPT EITHER WAY.';
+      const footShort = inNow ? 'BROWSER AND ACCOUNT KEPT IN STEP.'
+                              : 'RESULTS ARE KEPT EITHER WAY.';
+      const foot = F.measure(footLong, s, s) <= inner ? footLong : footShort;
+
+      F.draw(ctx, head, left + 10 * s, y + 7 * s,
+             { color: inNow ? GOOD : BONE,
+               scale: F.fitScale(head, inner, small, s, s), tracking: s });
+
+      const formY = y + 7 * s + slh + 8 * s;
+      F.draw(ctx, foot, left + 10 * s, formY + formH + 4 * s,
+             { color: BONE_FAINT,
+               scale: F.fitScale(foot, inner, small, s, s), tracking: s });
+
+      /* Handed out in 0..1 of the canvas, which is also 0..1 of the viewport -
+         the canvas is the whole window - so the panel can position itself in
+         percentages and stay put through a resize. */
+      this._signIn = {
+        u: (left + avail / 2) / W,
+        v: formY / H,
+        w: (avail - 20 * s) / W
+      };
+
+      y += bandH + 10 * s;
+    }
+
     // BACK is pinned to the bottom and is never scrolled away.
     const backH = F.lineHeight(row) + 12 * s;
     const backY = H - 8 * s - backH;
@@ -728,8 +793,13 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
 
     const gap = (n) => blocks.push({ h: n, draw: () => {} });
 
-    /* ---- not signed in: say what that means, above everything else. */
-    if (!SATG.account.user) {
+    /* ---- not signed in, and no sign-in to offer.
+
+       When cloud save is available the band in the header says all of this
+       already, and says it next to a form that can act on it. This branch is
+       what is left: a build with neither cloud save nor a Google client id,
+       where the only useful thing to print is why. */
+    if (!SATG.account.user && !(SATG.cloud && SATG.cloud.configured())) {
       blocks.push({ h: slh * 2 + 20 * s, draw: (ctx, y) => {
         ctx.fillStyle = PANEL;
         ctx.fillRect(left, y, avail, slh * 2 + 14 * s);
@@ -1146,6 +1216,12 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
 
   /* Where the Google button should sit: under the account line, top right. */
   buttonSpot() { return { u: 0.78, v: 0.13 }; }
+
+  /* Where the email form goes, in 0..1 of the screen, or null when the band
+     is not being drawn. Filled in by render(), so it is only ever answered
+     from a layout that has actually happened - a hard-coded spot here would
+     drift the moment the band's type was resized. */
+  signInSpot() { return this._signIn || null; }
 }
 
 SATG.screens.StatsScreen = StatsScreen;
