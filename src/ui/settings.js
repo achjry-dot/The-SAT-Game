@@ -39,6 +39,14 @@ const CONTROLS = [
     note: 'EVERYTHING THE GAME PLAYS.',
     format: (v) => Math.round(v * 100) + '%' },
 
+  { key: 'music', label: 'MUSIC VOLUME', kind: 'range',
+    min: 0, max: 1, step: 0.05,
+    /* Two lines is the hard cap the help area fits; anything longer is
+       silently truncated mid-word. */
+    note: 'THE WRITTEN MUSIC ONLY, NOT THE GAME\'S OWN SOUNDS. IT SITS UNDER ' +
+          'THEM ON PURPOSE.',
+    format: (v) => v <= 0 ? 'OFF' : Math.round(v * 100) + '%' },
+
   { key: 'explosion', label: 'EXPLOSION VOLUME', kind: 'range',
     min: 0, max: 1, step: 0.05,
     note: 'THE BLAST IS THE LOUDEST SOUND IN THE GAME. THIS TURNS IT DOWN ALONE.',
@@ -75,6 +83,10 @@ const CONTROLS = [
 const DEFAULTS = {
   brightness: 1.00,
   volume: 0.85,
+  /* Matches config.js's music.volume, which is what the slider is now the
+     front end for. Both say 0.55 because music is a bed: it wants to be well
+     under the cues, not level with them. */
+  music: 0.55,
   explosion: 1.00,
   machineSound: true,
   animations: true,
@@ -141,6 +153,12 @@ function apply() {
      every frame by the panic ramp, so a value set at the moment the slider
      moved would survive exactly one tick; the game multiplies by
      SATG.settings.values itself, in the same place it computes them. */
+  /* Music answers to its own slider AND to the master, in that order. It is
+     the one sound in the game that is not synthesised here, so it hangs off
+     an <audio> element rather than the master gain node - setVolume() folds
+     the master in itself, which is why this is a push rather than a multiply.
+     Guarded because music.js loads after this file. */
+  if (SATG.music && SATG.music.setVolume) SATG.music.setVolume(values.music);
   if (SATG.audio) {
     SATG.audio.setMasterVolume(values.volume);
     SATG.audio.setExplosionVolume(values.explosion);
