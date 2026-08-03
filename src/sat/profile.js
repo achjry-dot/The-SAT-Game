@@ -16,6 +16,7 @@
 'use strict';
 
 const SATG = global.SATG;
+const { clamp } = SATG.util;
 
 const KEY = 'satgame.profile.v1';
 
@@ -238,6 +239,9 @@ function saveReview(result) {
     perDifficulty: result.perDifficulty || [],
     items: result.items || []
   };
+  /* Not stored. The items carry their own seconds, and pacing() derives
+     everything else from them - so recomputing on read costs nothing and
+     cannot fall out of step with the items it describes. */
 
   a.reviews.push(review);
   let dropped = 0;
@@ -277,6 +281,141 @@ function deleteReview(at) {
   a.reviews.splice(i, 1);
   save();
   return true;
+}
+
+/* ------------------------------------------------- reopening a saved review
+
+   A review is stored under its own field names and the analysis screen reads a
+   run's, so one of them has to convert. Doing it here rather than teaching the
+   screen two vocabularies keeps the storage shape free to change.
+
+   The strength and weakness lists are recomputed rather than stored. That is
+   the point: the evidence threshold is a judgement, and when it moves, a review
+   saved last month should be re-judged by the new rule instead of preserving
+   whatever the rule happened to be on the day it was written. */
+function rankedQTypes(perQType) {
+  const sorted = (perQType || [])
+    .filter((q) => q && q.qtype && q.total)
+    .sort((a, b) => b.pct - a.pct || b.total - a.total);
+  return {
+    qtypeStrengths: sorted
+      .filter((q) => SATG.taxonomy.enoughData(q.total) && q.pct >= 0.8).slice(0, 5),
+    qtypeWeaknesses: sorted.slice().reverse()
+      .filter((q) => SATG.taxonomy.enoughData(q.total) && q.pct < 0.6).slice(0, 5)
+  };
+}
+
+function reviewAsResult(r) {
+  if (!r) return null;
+  const ranked = rankedQTypes(r.perQType);
+  return {
+    kind: r.kind,
+    at: r.at,
+    modeLabel: r.label || '',
+    isFull: !!r.isFull,
+    totalScaled: r.scaled | 0,
+    rawTotal: r.rawTotal | 0,
+    totalQuestions: r.totalQuestions | 0,
+    answered: r.answered | 0,
+    cleared: r.cleared | 0,
+    elapsed: r.elapsed | 0,
+    sections: r.sections || [],
+    perDomain: r.perDomain || [],
+    perSkill: r.perSkill || [],
+    perQType: r.perQType || [],
+    perDifficulty: r.perDifficulty || [],
+    items: r.items || [],
+    pacing: SATG.satUtil.pacing(r.items),
+    qtypeStrengths: ranked.qtypeStrengths,
+    qtypeWeaknesses: ranked.qtypeWeaknesses
+  };
+}
+
+/* ------------------------------------------------------- the total review
+
+   Everything, as one report, in the same shape a single run produces - so the
+   analysis screen renders it without knowing it is looking at a lifetime
+   rather than an afternoon.
+
+   One thing about it is genuinely uneven and the screen has to say so. The bars
+   are summed from every remembered run, because a run's aggregate costs a few
+   hundred bytes and four hundred of them fit. The per-question squares can only
+   come from SAVED reviews, because those are the only records that kept their
+   per-question detail. So the two halves of this page cover different spans,
+   and both counts are returned rather than blended into one number that would
+   be wrong for whichever half you were reading. */
+function combined() {
+  const a = account();
+  const runs = a.runs || [];
+  const revs = a.reviews || [];
+
+  const domains = {}, skills = {}, qtypes = {}, difficulty = {};
+  const add = (into, key, e) => {
+    if (!key || !e) return;
+    const t = into[key] || (into[key] = { right: 0, total: 0, section: null });
+    t.right += e.right | 0;
+    t.total += e.total | 0;
+    if (!t.section && e.section) t.section = e.section;
+  };
+
+  let elapsed = 0, answered = 0, correct = 0;
+  for (const r of runs) {
+    elapsed += r.elapsed || 0;
+    for (const k of Object.keys(r.domains || {})) {
+      add(domains, k, r.domains[k]);
+      answered += r.domains[k].total | 0;
+      correct += r.domains[k].right | 0;
+    }
+    for (const k of Object.keys(r.skills || {})) add(skills, k, r.skills[k]);
+    for (const k of Object.keys(r.qtypes || {})) add(qtypes, k, r.qtypes[k]);
+    for (const k of Object.keys(r.difficulty || {})) add(difficulty, k, r.difficulty[k]);
+  }
+
+  const toRanked = (map, nameKey) => Object.keys(map).map((k) => {
+    const e = map[k];
+    const o = { right: e.right, total: e.total,
+                pct: e.total ? e.right / e.total : 0, section: e.section || null };
+    o[nameKey] = k;
+    return o;
+  }).sort((x, y) => y.pct - x.pct || y.total - x.total);
+
+  const perQType = toRanked(qtypes, 'qtype');
+  const ranked = rankedQTypes(perQType);
+
+  /* Shallow copies: these objects live in the saved reviews, and the analysis
+     screen has no business being handed the stored originals. */
+  const items = [];
+  for (const rev of revs) {
+    for (const it of rev.items || []) items.push(Object.assign({}, it));
+  }
+
+  const bestTotal = runs.filter((r) => r.kind === 'full')
+                        .reduce((m, r) => Math.max(m, r.scaled || 0), 0);
+
+  return {
+    kind: 'combined',
+    screenTitle: 'TOTAL REVIEW',
+    modeLabel: 'LIFETIME',
+    runCount: runs.length,
+    reviewCount: revs.length,
+    elapsed, answered, correct,
+    accuracy: answered ? correct / answered : 0,
+    bestTotal,
+    firstAt: runs.length ? runs[0].at : null,
+    lastAt: runs.length ? runs[runs.length - 1].at : null,
+    perDomain: toRanked(domains, 'domain'),
+    perSkill: toRanked(skills, 'skill'),
+    perQType,
+    perDifficulty: ['easy', 'medium', 'hard']
+      .filter((k) => difficulty[k])
+      .map((k) => ({ difficulty: k, right: difficulty[k].right, total: difficulty[k].total,
+                     pct: difficulty[k].total ? difficulty[k].right / difficulty[k].total : 0 })),
+    items,
+    pacing: SATG.satUtil.pacing(items),
+    qtypeStrengths: ranked.qtypeStrengths,
+    qtypeWeaknesses: ranked.qtypeWeaknesses,
+    trend: trend()
+  };
 }
 
 /* ------------------------------------------------------------- aggregate */
@@ -474,7 +613,66 @@ function trend() {
       overall.push({ at: r.at, v: lastRw + lastMath, exact: r.kind === 'full' });
     }
   }
-  return { rw, math, overall };
+  return { rw, math, overall, projection: project(overall) };
+}
+
+/* Where the composite is heading, if nothing changes.
+
+   A least-squares line through the scores so far, extended by a third of the
+   run's length. This is the one device on the stats page that shows something
+   that has not happened, so three rules govern it:
+
+     - it needs at least four real scores. Two points define a line perfectly
+       and predict nothing; three is a coin toss. Below four this returns null
+       and the chart simply does not draw it.
+     - it is drawn as a BAND, not a line. The residual spread around the fit is
+       what says how much the projection is worth, and a single dotted line
+       implies a precision that a handful of practice tests cannot support.
+     - it is clamped to the real scale. A rising trend extrapolated far enough
+       produces 1900 out of 1600, which would discredit everything else on the
+       page. */
+const PROJECT_MIN_POINTS = 4;
+
+function project(points) {
+  const n = points.length;
+  if (n < PROJECT_MIN_POINTS) return null;
+
+  // Regress on index rather than on timestamp: the question is "per test
+  // taken", and a fortnight's gap between two of them does not change that.
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  points.forEach((p, i) => { sx += i; sy += p.v; sxx += i * i; sxy += i * p.v; });
+  const denom = n * sxx - sx * sx;
+  if (!denom) return null;
+  const slope = (n * sxy - sx * sy) / denom;
+  const intercept = (sy - slope * sx) / n;
+
+  // Root-mean-square residual, which is what the band is built from.
+  let ss = 0;
+  points.forEach((p, i) => {
+    const fit = intercept + slope * i;
+    ss += (p.v - fit) * (p.v - fit);
+  });
+  const rms = Math.sqrt(ss / n);
+
+  const ahead = Math.max(1, Math.round(n / 3));
+  const at = n - 1 + ahead;
+  const centre = clamp(Math.round(intercept + slope * at), 400, 1600);
+  const spread = Math.max(20, Math.round(rms));
+
+  return {
+    /* Per test taken, which is the unit the chart's x-axis is actually in. */
+    perTest: Math.round(slope * 10) / 10,
+    ahead,
+    at,
+    centre,
+    lo: clamp(centre - spread, 400, 1600),
+    hi: clamp(centre + spread, 400, 1600),
+    /* Set when the line was clipped by the scale. The chart says so out loud,
+       because a projection resting against the ceiling is not a prediction of a
+       perfect score - it is the model running out of room. */
+    clamped: intercept + slope * at > 1600 || intercept + slope * at < 400,
+    points: n
+  };
 }
 
 function reset() {
@@ -488,6 +686,7 @@ load();
 SATG.profile = {
   LOCAL_ID, MAX_REVIEWS, load, save, record, summary, trend, reset,
   saveReview, reviews, review, deleteReview, mergeRuns,
+  reviewAsResult, combined, rankQTypes: rankedQTypes,
   setAccount, clearAccount, currentAccount,
   get accountId() { return currentId; },
   get signedIn() { return currentId !== LOCAL_ID; }

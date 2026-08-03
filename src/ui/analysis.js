@@ -116,16 +116,31 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
     this.card = null;
     this.saved = false;
     this.saveNote = null;
+    this.saveable = true;
+    this.printable = true;
   }
 
-  reset(result) {
+  /* `opts` describes where the report came from, which is not cosmetic - it
+     decides which controls make sense:
+
+       saved      already in the record, so the button says SAVED rather than
+                  offering to store a second copy of the same run
+       saveable   false for the lifetime review, which is a view OF the record
+                  and cannot be saved into it
+       printable  false for the same reason: the printable document is built
+                  around one sitting, and there is no formal report to produce
+                  for "everything you have ever done" */
+  reset(result, opts) {
+    opts = opts || {};
     this.data = result || null;
     this.view = 'game';
-    this.depth = 'normal';
+    this.depth = opts.depth || 'normal';
     this.scroll = 0;
     this.card = null;
-    this.saved = false;
-    this.saveNote = null;
+    this.saved = !!opts.saved;
+    this.saveable = opts.saveable !== false;
+    this.printable = opts.printable !== false;
+    this.saveNote = opts.note || null;
     this.time = 0;
     this.dirty = true;
   }
@@ -165,6 +180,13 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
   }
 
   press(key) { this.fx.press(key); this.dirty = true; }
+
+  /* Can the paper be put back in front of the player? Only if the questions
+     themselves were stored alongside the outcomes. */
+  canReplay() {
+    const items = (this.data && this.data.items) || [];
+    return items.some((i) => i && i.paper);
+  }
 
   update(dt) {
     this.time += dt;
@@ -213,7 +235,8 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
     const MIN_BODY = Math.max(30 * s, Math.round(H * 0.26));
     const topY = Math.max(8 * s, Math.round(H * 0.04));
 
-    let title = F.fitScale('ANALYSIS', avail, 4 * s, 3 * s, s);
+    const heading0 = (this.data && this.data.screenTitle) || 'ANALYSIS';
+    let title = F.fitScale(heading0, avail, 4 * s, 3 * s, s);
     let btn   = Math.max(s, Math.round(title * 0.42));
     let row   = Math.max(s, Math.round(title * 0.32));
 
@@ -233,13 +256,15 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
     this.hits = [];
 
     let y = topY;
-    F.draw(ctx, 'ANALYSIS', left, y, { color: BONE, scale: title, tracking: 4 * s });
+    F.draw(ctx, heading0, left, y, { color: BONE, scale: title, tracking: 4 * s });
 
     const d = this.data || {};
-    const head = d.kind === 'infinity'
-      ? 'INFINITY   SURVIVED ' + clock(d.elapsed || 0)
-      : (d.modeLabel || 'PRACTICE') + '   ' + (d.totalScaled || 0) +
-        (d.isFull ? ' / 1600' : ' / 800');
+    const head = d.kind === 'combined'
+      ? (d.runCount || 0) + ' RUNS   ' + Math.round((d.accuracy || 0) * 100) + '%'
+      : d.kind === 'infinity'
+        ? 'INFINITY   SURVIVED ' + clock(d.elapsed || 0)
+        : (d.modeLabel || 'PRACTICE') + '   ' + (d.totalScaled || 0) +
+          (d.isFull ? ' / 1600' : ' / 800');
     const hf = F.fitScale(head, Math.round(avail * 0.55), row, s, s);
     F.draw(ctx, head, left + avail, y + Math.round(F.cellH * (title - hf) / 2),
            { color: BONE_DIM, scale: hf, align: 'right', tracking: s });
@@ -337,10 +362,25 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
       return w;
     };
 
-    for (const it of VIEWS) cell(it.label, it.key === this.view, 'view', it.key);
-    x += 14 * s;
+    /* The GAME/PRINT switch is drawn only where a printable document exists to
+       switch to. Offering it on the lifetime review would produce a button that
+       leads to a report nobody asked for and nothing generates. */
+    if (this.printable) {
+      for (const it of VIEWS) cell(it.label, it.key === this.view, 'view', it.key);
+      x += 14 * s;
+    }
     for (const it of DEPTHS) cell(it.label, it.key === this.depth, 'depth', it.key);
     x += 14 * s;
+
+    /* TEXT ANALYSIS: the paper again, with the answers still on it.
+
+       Offered only when the report actually carries the sheets. A review saved
+       before they were stored has the outcome of all 98 questions and the text
+       of none, and a button that opened a blank sheet would be worse than no
+       button at all. */
+    if (this.canReplay()) { cell('TEXT ANALYSIS', false, 'text', null, BONE); x += 14 * s; }
+
+    if (!this.saveable) return y + h + 12 * s;
 
     // SAVE TO STATS, which reports its own outcome rather than going quiet.
     const label = this.saved ? 'SAVED' : 'SAVE TO STATS';
@@ -454,7 +494,23 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
     const items = d.items || [];
 
     /* ---- headline numbers */
-    if (d.kind !== 'infinity') {
+    if (d.kind === 'combined') {
+      heading('LIFETIME RECORD');
+      note((d.runCount || 0) + ' RUNS FINISHED    ' + (d.correct || 0) + ' OF ' +
+           (d.answered || 0) + ' CORRECT    ' +
+           Math.round((d.accuracy || 0) * 100) + '%', BONE);
+      note('TIME PLAYED ' + clock(d.elapsed || 0) +
+           (d.bestTotal ? '    BEST FULL SAT ' + d.bestTotal + ' / 1600' : '') +
+           (d.firstAt ? '    SINCE ' + new Date(d.firstAt).toISOString().slice(0, 10) : ''));
+      /* The two halves of this page cover different spans, and saying so is not
+         optional - the bars would otherwise look like they were built from the
+         same questions as the squares. */
+      note('Every bar below is summed from all ' + (d.runCount || 0) +
+           ' runs. The squares are only the ' + (d.reviewCount || 0) +
+           ' review' + (d.reviewCount === 1 ? '' : 's') +
+           ' you saved, because those are the only records that kept their ' +
+           'per-question detail.', BONE_FAINT);
+    } else if (d.kind !== 'infinity') {
       const secs = d.sections || [];
       const line = secs.map((sc) =>
         (sc.section === 'math' ? 'MATH ' : 'ENGLISH ') + sc.scaled).join('    ');
@@ -463,8 +519,36 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
       note('RAW ' + (d.rawTotal || 0) + '/' + (d.totalQuestions || 0) +
            '    ANSWERED ' + (d.answered || 0) +
            '    TIME ' + clock(d.elapsed || 0));
-      note('Estimated scale. The real raw-to-scaled conversion is not published, ' +
-           'so treat this as a band rather than a point.', BONE_FAINT);
+
+      /* The band, drawn rather than only described.
+         Real score reports give a range because a single sitting does not
+         measure anything to the nearest point - and this one is an estimate on
+         top of that. Saying "treat it as a band" while printing one number
+         invites the number to be believed anyway. */
+      const span = d.isFull ? 40 : 20;
+      const lo = Math.max(d.isFull ? 400 : 200, (d.totalScaled || 0) - span);
+      const hi = Math.min(d.isFull ? 1600 : 800, (d.totalScaled || 0) + span);
+      push(F.lineHeight(row) + 18 * s, (ctx, y) => {
+        const barX = left, barW = avail, barH = Math.max(4 * s, Math.round(F.cellH * row * 0.5));
+        const by = y + 6 * s;
+        const floor = d.isFull ? 400 : 200, ceil = d.isFull ? 1600 : 800;
+        const at = (v) => barX + barW * clamp((v - floor) / (ceil - floor), 0, 1);
+        ctx.fillStyle = '#241f1a';
+        ctx.fillRect(barX, by, barW, barH);
+        ctx.fillStyle = '#4a4438';
+        ctx.fillRect(at(lo), by, Math.max(2 * s, at(hi) - at(lo)), barH);
+        ctx.fillStyle = BONE;
+        ctx.fillRect(at(d.totalScaled || 0) - Math.round(s), by - 3 * s,
+                     Math.max(2, Math.round(2 * s)), barH + 6 * s);
+        F.draw(ctx, String(floor), barX, by + barH + 4 * s,
+               { color: BONE_FAINT, scale: s, tracking: 0 });
+        F.draw(ctx, String(ceil), barX + barW, by + barH + 4 * s,
+               { color: BONE_FAINT, scale: s, align: 'right', tracking: 0 });
+      });
+      note('Likely range ' + lo + ' to ' + hi + '. The raw-to-scaled conversion for a ' +
+           'real form is not published, so this is an estimate - and a single sitting ' +
+           'measures you to about this precision anyway, which is why real score ' +
+           'reports print a range.', BONE_FAINT);
     } else {
       heading('RUN');
       note('CLEARED ' + (d.cleared || 0) + '    SURVIVED ' + clock(d.elapsed || 0), BONE);
@@ -497,6 +581,56 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
       const blank = items.filter((i) => !i.answered).length;
       note(right + ' right    ' + (items.length - right - blank) + ' wrong    ' +
            blank + ' blank    -  click any square to see why', BONE_FAINT);
+    }
+
+    /* ---- pacing: where the time went, and whether it cost anything */
+    const pace = d.pacing;
+    if (pace) {
+      heading('PACING');
+      note('Losing points because you ran out of time and losing them because you ' +
+           'could not do the questions look identical on a score report. They are ' +
+           'not the same problem and they do not have the same fix.', BONE_FAINT);
+
+      for (const ps of pace.perSection) {
+        blocks.push(this.paceBarBlock(L, ps));
+      }
+
+      /* The three bands, with the accuracy inside each. This is the part that
+         answers the question - rushing is only a problem if the rushed ones
+         were wrong. */
+      const band = (label, b, colour) => {
+        if (!b.count) return;
+        const acc = b.accuracy === null ? 'none answered'
+          : Math.round(b.accuracy * 100) + '% right';
+        note(label + '   ' + b.count + ' question' + (b.count === 1 ? '' : 's') +
+             '   -   ' + acc, colour);
+      };
+      band('RUSHED  (under 40% of the time available)', pace.rushed, WARN);
+      band('STEADY', pace.steady, BONE_DIM);
+      band('LABOURED  (over 175% of the time available)', pace.slow, WARN);
+
+      /* Say what it means only where the evidence supports saying it. Both
+         bands need enough questions to be worth a sentence, and the comparison
+         has to actually favour one side. */
+      const r = pace.rushed, sl = pace.slow, st = pace.steady;
+      if (r.count >= 4 && st.accuracy !== null && r.accuracy !== null &&
+          r.accuracy < st.accuracy - 0.15) {
+        note('The rushed ones are going wrong noticeably more often than the rest. ' +
+             'That is time pressure costing you marks, not content you do not know.', BLOOD);
+      } else if (sl.count >= 3 && st.count && sl.accuracy !== null &&
+                 sl.accuracy < (st.accuracy === null ? 1 : st.accuracy)) {
+        note('The questions you spent longest on are also the ones you got wrong. ' +
+             'Those are the ones to recognise early and come back to.', BLOOD);
+      } else if (r.count + sl.count <= Math.max(2, Math.round(pace.questions * 0.15))) {
+        note('Your pacing is even. Nothing here suggests the clock is what is ' +
+             'costing you marks.', GOOD);
+      }
+
+      if (pace.longest.length) {
+        note('Longest: ' + pace.longest.map((l) =>
+          '#' + l.n + ' ' + Math.round(l.seconds) + 's ' + (l.right ? '(right)' : '(wrong)')
+        ).join(',  '), BONE_FAINT);
+      }
     }
 
     /* ---- accuracy by difficulty: the dimension nothing used to read */
@@ -590,6 +724,51 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
       F.draw(ctx, tally, left + avail, y,
              { color: TX.enoughData(e.total) ? BONE_DIM : BONE_FAINT,
                scale: row, align: 'right', tracking: s });
+    } };
+  }
+
+  /* A pacing bar: seconds per question against the seconds the section allows.
+
+     Deliberately not an accuracy bar. An accuracy bar is full at 100% and full
+     is good; this one is full at the ALLOWANCE and full is neither good nor
+     bad - it means you used exactly the time you had. So the target is drawn as
+     a line the bar can cross, and crossing it is the thing being shown. The
+     scale runs to twice the allowance so that overrunning has somewhere to go
+     rather than pinning at the end and hiding how far over it went. */
+  paceBarBlock(L, ps) {
+    const { left, avail, row, s } = L;
+    const lh = F.lineHeight(row);
+    const h = lh + 10 * s;
+    const label = (ps.section === 'math' ? 'MATH' : ps.section === 'rw' ? 'ENGLISH' : 'OVERALL');
+    return { h, draw: (ctx, y) => {
+      const labelW = Math.round(avail * 0.42);
+      const barW = Math.round(avail * 0.34);
+      const barX = left + labelW + 8 * s;
+      const barH = Math.max(3 * s, Math.round(F.cellH * row * 0.62));
+      const by = y + Math.round((F.cellH * row - barH) / 2);
+
+      F.draw(ctx, label, left, y, { color: BONE_DIM, scale: row, tracking: s });
+
+      ctx.fillStyle = '#241f1a';
+      ctx.fillRect(barX, by, barW, barH);
+
+      const target = ps.target || ps.mean;
+      const full = target * 2;                       // the bar's right-hand edge
+      const frac = clamp(ps.mean / full, 0, 1);
+      const over = ps.target && ps.mean > ps.target;
+      ctx.fillStyle = over ? WARN : GOOD;
+      ctx.fillRect(barX, by, Math.max(1 * s, Math.round(barW * frac)), barH);
+
+      if (ps.target) {
+        // The allowance, as a line across the bar at the halfway point.
+        const tx = barX + Math.round(barW * 0.5);
+        ctx.fillStyle = BONE;
+        ctx.fillRect(tx, by - 2 * s, Math.max(1, Math.round(s)), barH + 4 * s);
+      }
+
+      const tail = ps.mean + 's' + (ps.target ? ' / ' + ps.target + 's' : '');
+      F.draw(ctx, tail, left + avail, y,
+             { color: over ? WARN : BONE_DIM, scale: row, align: 'right', tracking: s });
     } };
   }
 
@@ -735,6 +914,7 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
     lines.push({ t: (it.answered ? (it.right ? 'CORRECT' : 'INCORRECT') : 'NOT ANSWERED') +
                     '   -   ' + (q ? q.label : TX.labelOf(it.qtype)), c: it.right ? GOOD : BLOOD });
     if (q) lines.push({ t: q.asks, c: BONE_DIM });
+    if (q && q.cue) lines.push({ t: 'You can tell because.  ' + q.cue, c: GOOD });
     if (it.correctText) lines.push({ t: 'Correct answer.  ' + it.correctText, c: BONE });
     if (it.answered && !it.right && it.responseText) {
       lines.push({ t: 'You answered.  ' + it.responseText, c: BLOOD });
@@ -761,6 +941,7 @@ class AnalysisScreen extends SATG.screens.ScreenCanvas {
     const lines = [];
     if (q) {
       lines.push({ t: q.asks, c: BONE_DIM });
+      if (q.cue) lines.push({ t: 'You can tell because.  ' + q.cue, c: GOOD });
       lines.push({ t: 'Example.  ' + q.example, c: BONE });
       lines.push({ t: 'Usually missed by.  ' + q.trap, c: WARN });
     }

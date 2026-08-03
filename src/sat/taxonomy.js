@@ -674,6 +674,23 @@ const QTYPES = [
     trap: 'The whole question. A conditional probability uses the ROW total; using the grand total is the standard error.' },
 
   /* ============================== Geometry and Trigonometry */
+  /* The two skills College Board lists under Problem-Solving and Data Analysis
+     that this bank had no question types for at all. Their absence was reported
+     by verify() on every single load - "skill psda-infer has no question types
+     under it" - and it meant a student could sit a hundred practice tests here
+     and never meet a margin-of-error question, which the real test asks. */
+  { id: 'psda-infer-moe', skill: 'psda-infer', ka: 'data-inferences', oct: OCT.marginOfError,
+    label: 'Margin of error',
+    asks: 'A sample statistic is reported with a margin of error, and you have to say what range of values for the whole population it is consistent with.',
+    example: 'A poll of 400 residents estimates mean commute time at 34 minutes with a margin of error of 3 minutes. Which is the most appropriate conclusion?',
+    trap: 'Treating the interval as covering every individual rather than the population average, or thinking a larger sample widens the interval.' },
+
+  { id: 'psda-claims-design', skill: 'psda-claims', ka: 'evaluating-statistical-claims', oct: OCT.statsOverview,
+    label: 'Study design and what it licenses',
+    asks: 'A study is described. You have to say what can be concluded from it, and to whom the conclusion applies.',
+    example: 'Volunteers who already exercised were surveyed about sleep. What can be concluded?',
+    trap: 'Reading cause into an observational study, or generalising past the group that was actually sampled.' },
+
   { id: 'geo-areavol-rect', skill: 'geo-areavol', ka: 'area-and-volume',
     label: 'Area of a rectangle',
     asks: 'Area and one side given, the other side wanted - the formula run backwards.',
@@ -898,6 +915,96 @@ const DOMAIN_SECTION = {
   [D_CRAFT]: SEC_RW, [D_INFO]: SEC_RW, [D_CONV]: SEC_RW, [D_EXPR]: SEC_RW
 };
 
+/* ------------------------------------------------------------------- cues
+
+   How you know, from the question alone, that this is the type in front of you.
+
+   `asks` says what the task is and `trap` says how it is failed. Neither helps
+   at the moment that actually decides the question, which is the first four
+   seconds: recognising which of sixty-five things you are looking at. That is
+   the one skill a bank of practice questions teaches by accident and never
+   states, and it is what Khan's own lessons open with - "when you see X, they
+   are asking you to Y".
+
+   Kept as a separate table rather than a sixth field on every entry above, so
+   the shape of a question type stays readable, and so a missing cue is one
+   lookup rather than a scan of a thousand lines. verify() requires every type
+   to have one. */
+const CUES = {
+  'alg-lin1-solve': 'A single equation with x on both sides and no story around it.',
+  'alg-lin1-count': 'A letter sits where a coefficient should be, and the question asks HOW MANY solutions rather than what they are.',
+  'alg-lin2-write': 'You are given points, a slope, or a parallel/perpendicular line, and asked for an equation rather than a number.',
+  'alg-linfn-evaluate': 'A function is defined in words or symbols and you are handed one specific input to put into it.',
+  'alg-linfn-interpret': 'The answer choices are SENTENCES about what a number means, not numbers.',
+  'alg-sys-solve': 'Two equations stacked, two unknowns, and the question wants a value.',
+  'alg-sys-count': 'Two equations stacked, but the question asks how many solutions the system has.',
+  'alg-ineq-solve': 'An inequality sign, plus the words "least" or "greatest" and "integer".',
+  'adv-equiv-diffsquares': 'Two perfect squares with a minus between them, and no middle term.',
+  'adv-equiv-expand': 'Two brackets side by side, asking which expression is equivalent.',
+  'adv-equiv-factor': 'A quadratic in standard form, asking for it in brackets.',
+  'adv-equiv-exponent-product': 'Two powers of the same base multiplied together.',
+  'adv-equiv-exponent-power': 'A bracket with a power inside AND a power outside it.',
+  'adv-equiv-exponent-quotient': 'One power divided by another power of the same base.',
+  'adv-equiv-exponent-negative': 'A minus sign in the EXPONENT rather than in front of the term.',
+  'adv-nleq-quad-roots': 'A quadratic set to zero, asking for a specific root - often "the greater" or "the lesser".',
+  'adv-nleq-quad-sumproduct': 'The question asks for the sum or the product of the solutions without asking what they are.',
+  'adv-nleq-discriminant': 'A quadratic, and the question is HOW MANY real solutions - never what they are.',
+  'adv-nleq-radical': 'A square-root sign wrapped around an expression containing x.',
+  'adv-nlfn-vertex': 'A quadratic written as a(x - h)² + k, asking for a minimum or maximum VALUE.',
+  'adv-nlfn-exp-model': 'A function of the form A(bᵗ) with answer choices that are sentences about growth or decay.',
+  'adv-nlfn-exp-evaluate': 'A function of the form A(bᵗ) with a specific t to substitute.',
+  'adv-nlfn-composite': 'Two functions and a nested notation such as f(g(3)).',
+  'psda-ratio-rate': 'A rate given for one quantity and a different quantity asked about - "if 3 cost 12, what do 7 cost".',
+  'psda-ratio-units': 'A conversion factor is handed to you in the question itself, usually in brackets.',
+  'psda-pct-of': 'The bare shape "what is P% of N".',
+  'psda-pct-change': 'One price or quantity, changed once, asking for the new value.',
+  'psda-pct-successive': 'TWO percentage changes applied one after the other.',
+  'psda-pct-reverse': 'The result is given and the ORIGINAL is asked for - the word "after" is usually the giveaway.',
+  'psda-1var-center': 'A list of numbers and the word mean, median or mode.',
+  'psda-1var-spread': 'A value is added to or removed from a set, and the choices talk about what happens to two statistics at once.',
+  'psda-2var-scatter': 'A line of best fit is given as an equation and you are asked to PREDICT.',
+  'psda-prob-table': 'A two-way table, and the question names a row or a column before asking for a probability.',
+  'psda-infer-moe': 'The phrase "margin of error" appears, and the choices are sentences about a range.',
+  'psda-claims-design': 'A study is described in a paragraph and the choices are all conclusions - the question is what the DESIGN allows, not what the numbers say.',
+  'geo-areavol-rect': 'A rectangle with the area given and a side asked for, or the reverse.',
+  'geo-areavol-tri': 'Base and height are named explicitly - that pairing is the signal for the ½.',
+  'geo-areavol-circle': 'A radius and the phrase "in terms of π".',
+  'geo-areavol-box': 'Three dimensions, or a volume and two of the three.',
+  'geo-areavol-cyl': 'The words "right circular cylinder", with a radius and a height.',
+  'geo-lines-trianglesum': 'Two angles of a triangle given, the third asked for.',
+  'geo-lines-parallel': 'The words "parallel" and "transversal" together.',
+  'geo-lines-exterior': 'The word EXTERIOR - the whole question turns on it.',
+  'geo-lines-similar': 'Two triangles described as similar, with sides given in both.',
+  'geo-right-pythagorean': 'A right angle and two sides, with the third asked for and no mention of sin, cos or tan.',
+  'geo-right-trig-ratio': 'sin, cos or tan appears with an angle name, in a triangle whose sides are all given.',
+  'geo-right-trig-complementary': 'Two different angles in the same right triangle, linked by sin of one and cos of the other.',
+  'geo-circle-equation': 'x² and y² both present with no xy term, or a centre and radius handed to you.',
+  'geo-circle-arc': 'A central angle in degrees and the word ARC or LENGTH.',
+  'geo-circle-sector': 'A central angle in degrees and the word SECTOR or AREA.',
+  'geo-circle-radians': 'π appears in an angle measure, or the question names both degrees and radians.',
+  'rw-central-idea': 'The stem says "main idea", "main purpose" or "best states" and points at the whole text.',
+  'rw-evidence-textual': 'The stem describes a claim or hypothesis and asks which finding would SUPPORT or WEAKEN it.',
+  'rw-evidence-quantitative': 'There is a table or graph, and the answer choices are statements about the data.',
+  'rw-inference': 'The passage ends with a blank, or the stem says "most logically completes" or "logically follows".',
+  'rw-words-in-context': 'A blank inside a sentence with four single words or short phrases as choices.',
+  'rw-text-structure': 'The stem asks about the FUNCTION of a marked sentence, not what it says.',
+  'rw-cross-text': 'Two passages labelled Text 1 and Text 2, and the stem asks how one author would respond to the other.',
+  'rw-rhetorical-synthesis': 'Bulleted student notes, and the stem states a GOAL the sentence has to accomplish.',
+  'rw-transition': 'A blank at the start of a sentence with connecting words as the choices - however, therefore, for example.',
+  'rw-boundaries-sentence': 'The answer choices differ only in the punctuation between two complete ideas.',
+  'rw-boundaries-supplement': 'A descriptive phrase sits in the middle of a sentence and the choices vary its commas or dashes.',
+  'rw-fss-subject-verb': 'The choices are all the same verb in different forms, with a phrase separating it from its subject.',
+  'rw-fss-pronoun': 'The choices are pronouns - its, their, it, they.',
+  'rw-fss-genitive': 'The choices differ only in where an apostrophe sits, or whether there is one.',
+  'rw-fss-modifier': 'The sentence opens with a descriptive phrase and a comma, and the choices are whole clauses.',
+  'rw-fss-verb-tense': 'The choices are one verb in several tenses, and the sentence names a time.'
+};
+
+/* Attached to the entries themselves so every consumer - the logbook, the
+   analysis card, the print document - reads it the same way the other five
+   fields are read, with no second lookup to remember. */
+for (const q of QTYPES) q.cue = CUES[q.id] || null;
+
 /* -------------------------------------------------------------- accessors */
 
 function qtype(id) { return QTYPE_BY_ID[id] || null; }
@@ -1003,6 +1110,10 @@ function verify(generatedIds) {
     if (!q.label || !q.asks || !q.example || !q.trap) {
       problems.push('qtype ' + q.id + ' is missing one of label/asks/example/trap');
     }
+    /* Checked separately from the four above because cues live in their own
+       table: a type added to QTYPES without a matching CUES entry is exactly
+       the mistake the split invites, so it is the one this names out loud. */
+    if (!q.cue) problems.push('qtype ' + q.id + ' has no recognition cue');
   }
   for (const s of SKILLS) {
     if (!DOMAIN_SECTION[s.domain]) {

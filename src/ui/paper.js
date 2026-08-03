@@ -47,6 +47,32 @@ const ALERT     = '#7a2b22';
 /* Height of one module segment in the strip across the top of a module test. */
 const NAV_BAR_H = 30;
 
+/* Review colours. Green would not belong on a photocopied form, so "right" is
+   simply ink and "wrong" is the same red the invalid-entry flash already uses. */
+const MARK_OK   = '#241f1a';
+const MARK_BAD  = '#7a2b22';
+const MARK_NONE = '#a2977f';
+
+/* Rebuild a drawable question from a stored review item.
+
+   The item holds the outcome; item.paper holds what was on the sheet. Neither
+   alone is enough, which is why this takes both. */
+function questionFromItem(it) {
+  const p = it.paper;
+  return {
+    stem: p.stem,
+    passage: p.passage,
+    format: p.format,
+    section: p.section || it.section,
+    domain: p.domain || it.domain || '',
+    graphic: p.graphic,
+    choices: p.choices || [],
+    answerIndex: p.answerIndex,
+    answerText: it.correctText,
+    index: it.n
+  };
+}
+
 class Paper {
   constructor(gl) {
     this.gl = gl;
@@ -86,7 +112,48 @@ class Paper {
        answer visibly registering. It never animates while the sheet is lying
        on the table, because nothing calls update() there. */
     this.fx = new SATG.fx.PressFX();
+    /* Review state. Null during a run, which is what every other method tests
+       to decide whether the sheet is live or a record of something finished. */
+    this.review = null;
+    this.reviewItems = null;
+    this.reviewIndex = 0;
+    this.reviewBack = false;
     this.dirty = true;
+  }
+
+  /* --------------------------------------------------------- review mode
+
+     The same sheet, afterwards. The question is put back exactly as it was
+     asked, with the answer marked and the player's own answer marked next to
+     it - and the working is on the BACK of the sheet, reached by the circled i,
+     which is the one place a paper form would actually put it.
+
+     Nothing here can be answered. A review that let you change an answer would
+     be quietly rewriting the record you came to read. */
+  setReview(item, index, items) {
+    this.review = item || null;
+    this.reviewIndex = index | 0;
+    this.reviewItems = items || null;
+    this.reviewBack = false;
+    if (!item || !item.paper) { this.setQuestion(null); return; }
+    this.setQuestion(questionFromItem(item));
+    if (item.answered) this.restore(item.response);
+    this.dirty = true;
+  }
+
+  clearReview() {
+    this.review = null;
+    this.reviewItems = null;
+    this.reviewBack = false;
+    this.setQuestion(null);
+  }
+
+  /* Turn the sheet over, and back. */
+  flipReview() {
+    if (!this.review) return false;
+    this.reviewBack = !this.reviewBack;
+    this.dirty = true;
+    return true;
   }
 
   /* ------------------------------------------------------------- state */
@@ -131,6 +198,8 @@ class Paper {
   }
 
   select(i) {
+    // A review is a record. Nothing on it can be changed.
+    if (this.review) return;
     if (!this.question || this.question.format !== 'mc') return;
     if (i < 0 || i >= this.question.choices.length) return;
     this.selected = i;
@@ -142,6 +211,7 @@ class Paper {
      slash and a minus, and nothing else - so the paper refuses the rest
      rather than accepting characters that could never be graded. */
   typeChar(ch) {
+    if (this.review) return false;
     if (!this.question || this.question.format !== 'grid') return false;
     if (!/^[0-9./-]$/.test(ch)) { this.flagInvalid(); return false; }
 
@@ -203,9 +273,19 @@ class Paper {
      is 76px taller than the one it actually gets - which is how a question
      ends up running off the bottom of the sheet. */
   navHeight(s) {
-    if (!this.nav) return 0;
+    // The review strip occupies the same band the module strip does.
+    if (!this.nav && !this.review) return 0;
     const hs = Math.max(1, s * 0.8);
     return NAV_BAR_H + 8 + F.lineHeight(hs) + 14;
+  }
+
+  /* Width of the right-hand column that carries CORRECT / YOURS. Zero during a
+     run, so the live sheet is laid out exactly as it always was - and folded
+     into choicesHeight as well as drawChoices, or the type would be chosen
+     against a column the text does not actually get. */
+  reviewTagW(s) {
+    if (!this.review) return 0;
+    return F.measure('CORRECT', Math.max(1, s * 0.75), 1) + 16;
   }
 
   tableHeight(table, s) {
@@ -214,17 +294,30 @@ class Paper {
 
   choicesHeight(q, s) {
     const box = Math.round(26 * s);
-    const textW = COL - box - 14;
+    const textW = COL - box - 14 - this.reviewTagW(s);
     let h = 0;
     for (const c of q.choices) {
       const lines = F.wrap(c.text, textW, s, 0).length;
       h += Math.max(box, lines * F.lineHeight(s, 3)) + 12;
     }
-    return h + F.lineHeight(s) + 12;
+    return h + this.footHeight(s) + 12;
+  }
+
+  /* What sits under the answers. One hint line during a run; in review, the
+     verdict sentence plus the circled i beneath it.
+
+     Reserved generously - three lines rather than the two the verdict usually
+     takes - because being an inch short here does not shrink the type, it runs
+     the badge off the bottom of the sheet where it cannot be clicked. */
+  footHeight(s) {
+    if (!this.review) return F.lineHeight(s);
+    return F.lineHeight(Math.max(1, s * 0.8)) * 3 + 8 + Math.round(30 * s);
   }
 
   gridHeight(s) {
-    return F.lineHeight(s) + 10 + Math.round(54 * s) + 12 + F.lineHeight(s) * 2 + 12;
+    const extra = this.review ? this.footHeight(s) : 0;
+    return F.lineHeight(s) + 10 + Math.round(54 * s) + 12 +
+           F.lineHeight(s) * 2 + 12 + extra;
   }
 
   measureHeight(q, s) {
@@ -256,6 +349,7 @@ class Paper {
     this.hitChoices.length = 0;
     this.hitInput = null;
     this.hitNav.length = 0;
+    this.hitInfo = null;
 
     const q = this.question;
     if (!q) { this.upload(); return; }
@@ -263,8 +357,20 @@ class Paper {
     const s = this.chooseScale(q);
     this.bodyScale = s;
 
+    /* The back of the sheet. Same stock, same strip along the top so you can
+       keep moving through the paper without turning it over each time. */
+    if (this.review && this.reviewBack) {
+      let by = MARGIN;
+      by = this.drawReviewNav(ctx, by, s);
+      this.drawReviewBack(ctx, by, s);
+      this.drawFooter(ctx);
+      this.upload();
+      return;
+    }
+
     let y = MARGIN;
-    if (this.nav) y = this.drawNav(ctx, y, s);
+    if (this.review) y = this.drawReviewNav(ctx, y, s);
+    else if (this.nav) y = this.drawNav(ctx, y, s);
     y = this.drawHeader(ctx, y, q, s);
     y += 16;
 
@@ -366,6 +472,150 @@ class Paper {
     return y + F.lineHeight(hs) + 14;
   }
 
+  /* The strip along the top of a review sheet: one cell per question, filled
+     for right, hollow-red for wrong, blank for unanswered - so the shape of the
+     whole run is visible from any single question, and any of them is one click
+     away. */
+  drawReviewNav(ctx, y, s) {
+    const hs = Math.max(1, s * 0.8);
+    const items = this.reviewItems || [];
+    const n = Math.max(1, items.length);
+    const cellW = COL / n;
+
+    ctx.fillStyle = '#c9c0ad';
+    ctx.fillRect(MARGIN, y, COL, NAV_BAR_H);
+
+    items.forEach((it, i) => {
+      const x = MARGIN + i * cellW;
+      const w = Math.max(1, cellW - (cellW > 3 ? 1 : 0));
+      if (!it.answered) {
+        ctx.fillStyle = MARK_NONE;
+        ctx.fillRect(x, y + NAV_BAR_H - 6, w, 4);
+      } else if (it.right) {
+        ctx.fillStyle = MARK_OK;
+        ctx.fillRect(x, y + 4, w, NAV_BAR_H - 8);
+      } else {
+        ctx.fillStyle = MARK_BAD;
+        ctx.fillRect(x, y + 4, w, NAV_BAR_H - 8);
+        ctx.fillStyle = '#c9c0ad';
+        if (w > 4) ctx.fillRect(x + 2, y + 6, w - 4, NAV_BAR_H - 12);
+      }
+      if (i === this.reviewIndex) {
+        ctx.fillStyle = INK;
+        ctx.fillRect(x, y - 3, Math.max(2, w), 3);
+        ctx.fillRect(x, y + NAV_BAR_H, Math.max(2, w), 3);
+      }
+      this.hitNav.push({ x, y: y - 3, w: Math.max(3, cellW), h: NAV_BAR_H + 6,
+                         type: 'reviewJump', index: i });
+    });
+
+    y += NAV_BAR_H + 8;
+
+    const arrowW = Math.round(30 * hs), arrowH = F.lineHeight(hs) + 8;
+    const canPrev = this.reviewIndex > 0;
+    const canNext = this.reviewIndex < items.length - 1;
+
+    const drawArrow = (glyph, x, enabled, type) => {
+      const pv = this.fx.value(type);
+      const pressedIn = pv > 0.05;
+      ctx.fillStyle = enabled ? INK : '#b8ac97';
+      ctx.fillRect(x, y - 4, arrowW, arrowH);
+      ctx.fillStyle = pressedIn ? INK : '#c9c0ad';
+      ctx.fillRect(x + 2, y - 2, arrowW - 4, arrowH - 4);
+      F.draw(ctx, glyph, x + arrowW / 2, y + 1 + Math.round(pv * 2),
+             { color: pressedIn ? '#c9c0ad' : (enabled ? INK : '#a2977f'),
+               scale: hs, align: 'center' });
+      if (enabled) this.hitNav.push({ x, y: y - 4, w: arrowW, h: arrowH, type });
+    };
+    drawArrow('<', MARGIN, canPrev, 'prev');
+    drawArrow('>', MARGIN + arrowW + 6, canNext, 'next');
+
+    const it = this.review;
+    F.draw(ctx, 'REVIEW  ' + (this.reviewIndex + 1) + ' OF ' + items.length,
+           MARGIN + arrowW * 2 + 20, y, { color: INK, scale: hs, tracking: 1 });
+    const verdict = !it ? '' : (!it.answered ? 'BLANK' : it.right ? 'CORRECT' : 'WRONG');
+    F.draw(ctx, verdict, W - MARGIN, y,
+           { color: !it || !it.answered ? INK_FAINT : it.right ? INK : MARK_BAD,
+             scale: hs, align: 'right', tracking: 1 });
+
+    return y + F.lineHeight(hs) + 14;
+  }
+
+  /* The working, on the back of the sheet. Everything the review knows about
+     this one question, in the order a student would ask it: what the answer
+     was, what they put, why, and what the trap usually is. */
+  drawReviewBack(ctx, y, s) {
+    const it = this.review;
+    const hs = Math.max(1, s * 0.8);
+    const q = this.question;
+
+    F.draw(ctx, 'QUESTION ' + (it.n || this.reviewIndex + 1) + ' - THE WORKING',
+           MARGIN, y, { color: INK, scale: s, tracking: 1 });
+    y += F.lineHeight(s) + 6;
+    ctx.fillStyle = INK_RULE;
+    ctx.fillRect(MARGIN, y, COL, 2);
+    y += 12;
+
+    const tx = SATG.taxonomy;
+    const type = it.qtype ? tx.qtype(it.qtype) : null;
+
+    const paras = [];
+    if (type) paras.push({ h: 'THIS IS', t: type.label + '. ' + type.asks });
+    if (type && type.cue) paras.push({ h: 'YOU CAN TELL BECAUSE', t: type.cue });
+    paras.push({ h: 'THE ANSWER', t: it.correctText || (q && q.answerText) || '-' });
+    paras.push({ h: 'YOU PUT',
+                 t: it.answered ? (it.responseText || String(it.response))
+                                : 'NOTHING - THIS ONE WAS LEFT BLANK.' });
+    if (it.whyWrong) paras.push({ h: 'THAT IS WHAT YOU GET IF', t: it.whyWrong });
+    if (it.explanation) paras.push({ h: 'WHY', t: it.explanation });
+    if (type && type.trap) paras.push({ h: 'USUALLY MISSED BY', t: type.trap });
+
+    const limit = this.contentLimit;
+    for (const p of paras) {
+      if (y > limit - F.lineHeight(hs) * 2) break;
+      F.draw(ctx, p.h, MARGIN, y, { color: INK_FAINT, scale: hs, tracking: 1 });
+      y += F.lineHeight(hs) + 2;
+      y += F.drawWrapped(ctx, p.t, MARGIN + 10, y, COL - 10,
+                         { color: INK, scale: hs, leading: 4 });
+      y += 12;
+    }
+
+    /* Every other option's reason, where the generator has one. A player who
+       got it right is usually here to ask why one of the others was not it. */
+    const ch = (q && q.choices) || [];
+    const others = ch.map((c, i) => ({ c, i }))
+                     .filter((e) => e.c.why && e.i !== q.answerIndex);
+    if (others.length && y < limit - F.lineHeight(hs) * 2) {
+      F.draw(ctx, 'THE OTHERS', MARGIN, y, { color: INK_FAINT, scale: hs, tracking: 1 });
+      y += F.lineHeight(hs) + 2;
+      for (const e of others) {
+        if (y > limit - F.lineHeight(hs)) break;
+        y += F.drawWrapped(ctx, e.c.letter + '.  ' + e.c.why, MARGIN + 10, y, COL - 10,
+                           { color: INK_SOFT, scale: hs, leading: 4 });
+        y += 6;
+      }
+    }
+
+    this.drawInfoBadge(ctx, MARGIN, H - MARGIN - F.lineHeight(1) - 46, s, true);
+  }
+
+  /* The circled i. In the same place on both faces of the sheet, because it is
+     the control that turns it over. */
+  drawInfoBadge(ctx, x, y, s, isBack) {
+    const r = Math.round(12 * Math.max(1, s * 0.8));
+    const cx = x + r, cy = y + r;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = Math.max(2, Math.round(s));
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    F.draw(ctx, isBack ? 'x' : 'i', cx, cy - Math.round(F.cellH * s * 0.5),
+           { color: INK, scale: s, align: 'center' });
+    const label = isBack ? 'BACK TO THE QUESTION' : 'SEE WHY';
+    F.draw(ctx, label, cx + r + 8, cy - Math.round(F.cellH * Math.max(1, s * 0.7) * 0.5),
+           { color: INK_FAINT, scale: Math.max(1, s * 0.7), tracking: 1 });
+    this.hitInfo = { x: x - 4, y: y - 4, w: r * 2 + 16 +
+                     F.measure(label, Math.max(1, s * 0.7), 1), h: r * 2 + 8 };
+  }
+
   drawHeader(ctx, y, q, s) {
     const hs = Math.max(1, s * 0.8);
     const label = q.section === 'math' ? 'SECTION II - MATHEMATICS'
@@ -418,10 +668,15 @@ class Paper {
     const boxSize = Math.round(26 * s);
     const gap = 12;
     const textX = MARGIN + boxSize + 14;
-    const textW = COL - boxSize - 14;
+    const tagW = this.reviewTagW(s);
+    const textW = COL - boxSize - 14 - tagW;
+    const rv = this.review;
+    const ts = Math.max(1, s * 0.75);
 
     q.choices.forEach((choice, i) => {
       const isSel = i === this.selected;
+      const isKey = rv && i === q.answerIndex;
+      const isMine = rv && i === this.selected;
       const lines = F.wrap(choice.text, textW, s, 0);
       const blockH = Math.max(boxSize, lines.length * F.lineHeight(s, 3));
 
@@ -441,22 +696,54 @@ class Paper {
           Math.max(1, s), INK);
       }
 
-      ctx.fillStyle = isSel ? SELECT_FG : INK;
+      /* In review the key gets the filled box whether or not it was chosen, so
+         "what the answer was" reads before "what I put" - which is the order
+         somebody re-reading a paper actually wants them in. */
+      const boxFilled = rv ? isKey : isSel;
+      ctx.fillStyle = boxFilled ? SELECT_FG : (isMine ? MARK_BAD : INK);
       ctx.fillRect(MARGIN, y, boxSize, boxSize);
-      ctx.fillStyle = isSel ? SELECT_BG : '#c9c0ad';
+      ctx.fillStyle = boxFilled ? SELECT_BG : '#c9c0ad';
       ctx.fillRect(MARGIN + 2, y + 2, boxSize - 4, boxSize - 4);
       F.draw(ctx, choice.letter, MARGIN + boxSize / 2,
              y + Math.round((boxSize - F.cellH * s) / 2),
-             { color: isSel ? SELECT_FG : INK, scale: s, align: 'center' });
+             { color: boxFilled ? SELECT_FG : (isMine ? MARK_BAD : INK),
+               scale: s, align: 'center' });
 
+      const textColor = isSel ? SELECT_FG
+                      : (rv && !isKey && !isMine ? INK_SOFT : INK);
       lines.forEach((ln, li) => {
         F.draw(ctx, ln, textX, y + li * F.lineHeight(s, 3) + Math.round(3 * s),
-               { color: isSel ? SELECT_FG : INK, scale: s });
+               { color: textColor, scale: s });
       });
+
+      if (rv && (isKey || isMine)) {
+        const tag = isKey ? 'CORRECT' : 'YOURS';
+        F.draw(ctx, tag, W - MARGIN, y + Math.round(3 * s),
+               { color: isKey ? INK : MARK_BAD, scale: ts,
+                 align: 'right', tracking: 1 });
+      }
 
       this.hitChoices.push({ x: MARGIN - 8, y: y - 5, w: COL + 16, h: blockH + 10, index: i });
       y += blockH + gap;
     });
+
+    const hs = Math.max(1, s * 0.8);
+    if (rv) {
+      /* The verdict in a sentence, because the marks alone do not say what a
+         blank was, and a blank is the one outcome with no row to point at. */
+      const it = this.review;
+      const line = !it.answered
+        ? 'YOU LEFT THIS BLANK. THE ANSWER IS ' + (it.correctText || '-') + '.'
+        : it.right
+          ? 'YOU ANSWERED ' + (it.responseText || '') + '. CORRECT.'
+          : 'YOU ANSWERED ' + (it.responseText || '') + '. THE ANSWER IS ' +
+            (it.correctText || '-') + '.';
+      const vh = F.drawWrapped(ctx, line, MARGIN, y + 6, COL,
+                               { color: it.right ? INK : MARK_BAD,
+                                 scale: hs, leading: 3 });
+      this.drawInfoBadge(ctx, MARGIN, y + 6 + vh + 8, s, false);
+      return;
+    }
 
     /* On a module test nothing is graded until the clock stops, so ENTER
        moves on rather than committing - saying "SUBMIT" there would promise
@@ -464,8 +751,7 @@ class Paper {
     const hint = this.selected >= 0
       ? (this.nav ? 'PRESS ENTER FOR THE NEXT QUESTION' : 'PRESS ENTER TO SUBMIT')
       : 'SELECT AN ANSWER';
-    F.draw(ctx, hint, MARGIN, y + 6,
-           { color: INK_FAINT, scale: Math.max(1, s * 0.8), tracking: 1 });
+    F.draw(ctx, hint, MARGIN, y + 6, { color: INK_FAINT, scale: hs, tracking: 1 });
   }
 
   drawGridBox(ctx, y, q, s) {
@@ -496,6 +782,21 @@ class Paper {
     this.hitInput = { x: MARGIN, y, w: boxW, h: boxH };
     y += boxH + 12;
 
+    if (this.review) {
+      const it = this.review;
+      const line = !it.answered
+        ? 'YOU LEFT THIS BLANK. THE ANSWER IS ' + (it.correctText || '-') + '.'
+        : it.right
+          ? 'YOU WROTE ' + (it.responseText || this.typed) + '. CORRECT.'
+          : 'YOU WROTE ' + (it.responseText || this.typed) + '. THE ANSWER IS ' +
+            (it.correctText || '-') + '.';
+      const vh = F.drawWrapped(ctx, line, MARGIN, y, COL,
+                               { color: it.right ? INK : MARK_BAD,
+                                 scale: ls, leading: 3 });
+      this.drawInfoBadge(ctx, MARGIN, y + vh + 8, s, false);
+      return;
+    }
+
     F.draw(ctx, 'DIGITS, - . / ONLY. MAX 5 CHARACTERS (6 IF NEGATIVE).',
            MARGIN, y, { color: INK_FAINT, scale: ls });
     y += F.lineHeight(ls) + 4;
@@ -509,10 +810,11 @@ class Paper {
     const y = H - MARGIN - F.lineHeight(1);
     ctx.fillStyle = INK_RULE;
     ctx.fillRect(MARGIN, y - 12, COL, 2);
-    F.draw(ctx, 'FORM 4-B  /  DO NOT DETACH', MARGIN, y,
-           { color: INK_FAINT, scale: 1, tracking: 1 });
-    F.draw(ctx, 'ESC - SET DOWN', W - MARGIN, y,
-           { color: INK_FAINT, scale: 1, align: 'right', tracking: 1 });
+    F.draw(ctx, this.review ? 'FORM 4-B  /  MARKED COPY' : 'FORM 4-B  /  DO NOT DETACH',
+           MARGIN, y, { color: INK_FAINT, scale: 1, tracking: 1 });
+    F.draw(ctx, this.review ? 'LEFT / RIGHT - QUESTION    I - WHY    ESC - BACK'
+                            : 'ESC - SET DOWN',
+           W - MARGIN, y, { color: INK_FAINT, scale: 1, align: 'right', tracking: 1 });
   }
 
   upload() {
@@ -527,8 +829,15 @@ class Paper {
      top-left. Returns a descriptor or null. */
   hitTest(u, v) {
     const x = u * W, y = v * H;
-    // Navigation first: its arrows sit above the question, so nothing else
-    // can be under them, but ordering it first keeps that true if the layout
+    /* The circled i first. It is the only control on the back of the sheet, and
+       on the front it sits below the answers where nothing else is - but
+       ordering it first means it stays reachable if the layout ever moves. */
+    const inf = this.hitInfo;
+    if (inf && x >= inf.x && x <= inf.x + inf.w && y >= inf.y && y <= inf.y + inf.h) {
+      return { type: 'info' };
+    }
+    // Navigation next: its arrows sit above the question, so nothing else
+    // can be under them, but ordering it early keeps that true if the layout
     // ever moves.
     for (const n of this.hitNav) {
       if (x >= n.x && x <= n.x + n.w && y >= n.y && y <= n.y + n.h) {

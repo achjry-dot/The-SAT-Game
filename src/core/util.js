@@ -11,7 +11,7 @@ const SATG = global.SATG || (global.SATG = {});
    apart from a stale cached copy - "it looks like nothing changed" and "the
    change did not work" are different bugs, and this is how they are told
    apart. Printed to the console at boot and shown on the title card. */
-SATG.BUILD = '2026.08.02-f';
+SATG.BUILD = '2026.08.03-b';
 
 /* ---------------------------------------------------------------- scalars */
 

@@ -44,7 +44,11 @@ const TABS = [
   { key: 'rw',      label: 'ENGLISH' },
   { key: 'math',    label: 'MATH' },
   { key: 'overall', label: 'OVERALL' },
-  { key: 'overall', label: 'LOGBOOK', logbook: true }
+  { key: 'overall', label: 'LOGBOOK', logbook: true },
+  /* HISTORY is the other half of the SAVE TO STATS button. Without it that
+     button wrote something the player could never read back, which is a worse
+     state than not having offered to save at all. */
+  { key: 'overall', label: 'HISTORY', history: true }
 ];
 
 const TX = SATG.taxonomy;
@@ -52,6 +56,9 @@ const LINK = '#6fb7d8';
 
 const clock = SATG.screens.formatClock;
 const shortDomain = SATG.screens.shortDomain;
+/* Defined in analysis.js, which loads first. Shrink-then-truncate, so a long
+   run label cannot run under the score sitting at the other end of the row. */
+const fitOrClip = SATG.screens.fitOrClip;
 
 function pctColor(p) { return p >= 0.7 ? GOOD : p >= 0.45 ? WARN : BLOOD; }
 
@@ -77,9 +84,15 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
        the thing you just clicked is still on screen. */
     this.openChapter = null;
     this.openType = null;
+    /* A review is the only thing on this page that can be destroyed, so
+       deleting one takes two clicks: the first arms this, the second acts.
+       Nothing else here is irreversible, and a saved report lost to a stray
+       click is not recoverable from anywhere. */
+    this.armedDelete = null;
   }
 
   get isLogbook() { return !!TABS[this.tab].logbook; }
+  get isHistory() { return !!TABS[this.tab].history; }
 
   reset() {
     this.scroll = 0;
@@ -99,10 +112,34 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
     // you are already on still acknowledges itself.
     this.fx.press('tab' + i);
     this.dirty = true;
+    this.armedDelete = null;
     if (i === this.tab) return false;
     this.tab = i;
     this.scroll = 0;
     this.refresh();
+    return true;
+  }
+
+  /* Two-step delete: the first click arms, the second acts, and a click on
+     anything else cancels. Returns what it did, because the caller decides
+     which sound to play and only one of these outcomes destroys anything. */
+  armDelete(at) {
+    this.fx.press('rd' + at);
+    if (this.armedDelete !== at) {
+      this.armedDelete = at;
+      this.dirty = true;
+      return 'armed';
+    }
+    this.armedDelete = null;
+    const ok = SATG.profile.deleteReview(at);
+    this.refresh();
+    return ok ? 'deleted' : 'missing';
+  }
+
+  disarmDelete() {
+    if (this.armedDelete === null) return false;
+    this.armedDelete = null;
+    this.dirty = true;
     return true;
   }
 
@@ -434,6 +471,10 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
 
     const paras = [
       { t: q.asks, c: BONE },
+      /* First, because it is the first thing that happens in the exam: you have
+         to know which of the sixty-five you are looking at before anything else
+         on this card is any use. */
+      { t: 'YOU CAN TELL BECAUSE.  ' + q.cue, c: GOOD },
       { t: 'EXAMPLE.  ' + q.example, c: BONE_DIM },
       { t: 'USUALLY MISSED BY.  ' + q.trap, c: WARN }
     ];
@@ -515,6 +556,149 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
     } };
   }
 
+  /* ------------------------------------------------------------- history
+
+     Two different things live here, and they are not the same record.
+
+     The TOTAL REVIEW is built from every run ever finished - four hundred of
+     them fit, because a run's aggregate is a few hundred bytes.
+
+     A SAVED REVIEW is the whole run: every question, every answer, every
+     explanation. Ninety-eight of those is far too much to keep four hundred
+     times over, so they are opt-in and capped, and this page says what the cap
+     is rather than letting a report quietly disappear off the end. */
+  buildHistory(d, L) {
+    const { left, avail, row, small, s } = L;
+    const blocks = [];
+    const lh = F.lineHeight(row);
+    const slh = F.lineHeight(small);
+    const push = (h, draw) => blocks.push({ h, draw });
+    const gap = (n) => push(n, () => {});
+
+    const heading = (text) => push(lh + 12 * s, (ctx, y) => {
+      F.draw(ctx, text, left, y + 6 * s, { color: BONE, scale: row, tracking: 2 * s });
+      ctx.fillStyle = '#241f1a';
+      ctx.fillRect(left, y + 6 * s + lh + 2 * s, avail, 1 * s);
+    });
+
+    const line = (text, color, scale) => {
+      const sc = scale || small;
+      const fit = F.fitLines(text, avail, sc, s, 6, s);
+      push(F.lineHeight(fit.scale) * fit.lines.length + 4 * s, (ctx, y) => {
+        let yy = y;
+        for (const ln of fit.lines) {
+          F.draw(ctx, ln, left, yy,
+                 { color: color || BONE_DIM, scale: fit.scale, tracking: s });
+          yy += F.lineHeight(fit.scale);
+        }
+      });
+    };
+
+    const revs = SATG.profile.reviews();
+
+    /* ---- the combined report */
+    heading('TOTAL REVIEW');
+    if (d.totalRunCount) {
+      line('EVERY RUN YOU HAVE FINISHED, AS ONE REPORT - ACCURACY BY DIFFICULTY, ' +
+           'BY DOMAIN, AND BY ALL ' + TX.QTYPES.length + ' QUESTION TYPES.', BONE_DIM);
+      const label = 'OPEN TOTAL REVIEW';
+      const bw = F.measure(label, row, 2 * s) + 26 * s;
+      const bh = lh + 10 * s;
+      push(bh + 12 * s, (ctx, y) => {
+        const v = this.fx.value('combined');
+        ctx.fillStyle = '#1d2a1f';
+        ctx.fillRect(left, y, bw, bh);
+        SATG.fx.drawPress(ctx, v, { x: left, y, w: bw, h: bh }, s);
+        F.draw(ctx, label, left + 13 * s, y + 5 * s + SATG.fx.pressOffset(v, s),
+               { color: SATG.fx.brighten(GOOD, v), scale: row, tracking: 2 * s });
+        this.hits.push({ x: left, y, w: bw, h: bh, kind: 'combined', scrolls: true });
+      });
+    } else {
+      line('NOTHING TO COMBINE YET - FINISH A RUN FIRST.', BONE_FAINT);
+      gap(10 * s);
+    }
+    gap(8 * s);
+
+    /* ---- the saved reviews */
+    heading('SAVED REVIEWS   ' + revs.length + ' OF ' + SATG.profile.MAX_REVIEWS);
+    if (!revs.length) {
+      line('NONE SAVED YET.', BONE_DIM);
+      line('FINISH A RUN, OPEN FULL ANALYSIS, AND PRESS SAVE TO STATS. ' +
+           'A SAVED REVIEW KEEPS EVERY QUESTION AND EVERY EXPLANATION, SO YOU ' +
+           'CAN REOPEN IT HERE LONG AFTER THE RUN IS OVER.', BONE_FAINT);
+      gap(20 * s);
+      return blocks;
+    }
+
+    line('CLICK ONE TO REOPEN IT IN FULL.', BONE_FAINT);
+    gap(6 * s);
+
+    for (const r of revs) {
+      const armed = this.armedDelete === r.at;
+      const when = new Date(r.at);
+      const p2 = (n) => String(n).padStart(2, '0');
+      const stamp = when.getFullYear() + '-' + p2(when.getMonth() + 1) + '-' +
+                    p2(when.getDate()) + '  ' + p2(when.getHours()) + ':' +
+                    p2(when.getMinutes());
+      const items = r.items || [];
+      const right = items.filter((i) => i.right).length;
+      const score = r.kind === 'infinity'
+        ? (r.cleared | 0) + ' CLEARED'
+        : (r.scaled | 0) + (r.isFull ? ' / 1600' : ' / 800');
+      const detail = items.length
+        ? right + '/' + items.length + ' RIGHT   ' + clock(r.elapsed || 0)
+        : clock(r.elapsed || 0);
+
+      const rowH = slh * 2 + 14 * s;
+      push(rowH + 4 * s, (ctx, y) => {
+        ctx.fillStyle = PANEL;
+        ctx.fillRect(left, y, avail, rowH);
+
+        const delLabel = armed ? 'CONFIRM' : 'DELETE';
+        const delW = F.measure('CONFIRM', small, 2 * s) + 18 * s;
+        const openW = Math.max(1, avail - delW - 8 * s);
+
+        const ov = this.fx.value('rv' + r.at);
+        SATG.fx.drawPress(ctx, ov, { x: left, y, w: openW, h: rowH }, s);
+        const dy = SATG.fx.pressOffset(ov, s);
+
+        F.draw(ctx, fitOrClip(stamp + '   ' + (r.label || 'RUN'),
+                              openW - 16 * s - F.measure(score, small, s), small, s),
+               left + 8 * s, y + 4 * s + dy,
+               { color: SATG.fx.brighten(BONE, ov), scale: small, tracking: s });
+        F.draw(ctx, score, left + openW - 8 * s, y + 4 * s + dy,
+               { color: BONE, scale: small, align: 'right', tracking: s });
+        F.draw(ctx, detail, left + 8 * s, y + 4 * s + slh + dy,
+               { color: BONE_FAINT, scale: small, tracking: s });
+        this.hits.push({ x: left, y, w: openW, h: rowH,
+                         kind: 'review-open', at: r.at, scrolls: true });
+
+        const dvx = left + avail - delW;
+        const dv = this.fx.value('rd' + r.at);
+        ctx.fillStyle = armed ? '#3a1714' : '#1a1613';
+        ctx.fillRect(dvx, y, delW, rowH);
+        SATG.fx.drawPress(ctx, dv, { x: dvx, y, w: delW, h: rowH }, s);
+        F.draw(ctx, delLabel, dvx + delW / 2,
+               y + Math.round((rowH - F.cellH * small) / 2) + SATG.fx.pressOffset(dv, s),
+               { color: SATG.fx.brighten(armed ? BLOOD : BONE_FAINT, dv),
+                 scale: small, align: 'center', tracking: s });
+        this.hits.push({ x: dvx, y, w: delW, h: rowH,
+                         kind: 'review-delete', at: r.at, scrolls: true });
+      });
+    }
+
+    if (this.armedDelete) {
+      line('CLICK CONFIRM AGAIN TO DELETE THAT REVIEW. IT CANNOT BE UNDONE. ' +
+           'CLICK ANYWHERE ELSE TO CANCEL.', BLOOD);
+    }
+    if (revs.length >= SATG.profile.MAX_REVIEWS) {
+      line('AT THE LIMIT. SAVING ANOTHER WILL DROP THE OLDEST ONE.', WARN);
+    }
+
+    gap(20 * s);
+    return blocks;
+  }
+
   /* Each block knows its own height, so the scroll window can be computed
      without drawing anything. */
   buildBlocks(d, L) {
@@ -523,9 +707,11 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
     const lh = F.lineHeight(row);
     const slh = F.lineHeight(small);
 
-    /* The logbook is a catalogue, not a score view: it has content even with
-       no runs recorded, so it is answered before the empty-tab checks below. */
+    /* The logbook is a catalogue and the history is a filing cabinet. Both have
+       something to say with no runs recorded, so both are answered before the
+       empty-tab checks below. */
     if (this.isLogbook) return this.buildLogbook(d, L);
+    if (this.isHistory) return this.buildHistory(d, L);
 
     const heading = (text) => blocks.push({ h: lh + 12 * s, draw: (ctx, y) => {
       F.draw(ctx, text, left, y + 6 * s, { color: BONE, scale: row, tracking: 2 * s });
@@ -609,6 +795,59 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
         line('A HOLLOW POINT ON THE COMPOSITE IS AN ESTIMATE - YOUR LATEST SCORE IN ' +
              'EACH SECTION, NOT ONE SITTING.', BONE_FAINT);
       }
+      /* The projection is stated in words as well as drawn, because a shaded
+         wedge is easy to misread as measured data and a sentence is not. */
+      const pr = tr.projection;
+      if (d.scope === 'overall' && pr) {
+        const dir = pr.perTest > 0.5 ? 'RISING' : pr.perTest < -0.5 ? 'FALLING' : 'FLAT';
+        line('PROJECTED   ' + pr.lo + ' TO ' + pr.hi + ' IN ' + pr.ahead +
+             ' MORE TEST' + (pr.ahead === 1 ? '' : 'S') + '   (' + dir +
+             (dir === 'FLAT' ? '' : ' ' + (pr.perTest > 0 ? '+' : '') + pr.perTest + ' PER TEST') + ')',
+             pr.perTest > 0.5 ? GOOD : pr.perTest < -0.5 ? BLOOD : BONE_DIM, row);
+        line('THE SHADED WEDGE IS A PROJECTION FROM YOUR LAST ' + pr.points +
+             ' SCORES, NOT A RESULT. IT ASSUMES YOU CARRY ON EXACTLY AS YOU HAVE BEEN.',
+             BONE_FAINT);
+        if (pr.clamped) {
+          line('THE TREND RUNS OFF THE TOP OF THE SCALE, SO THE FIGURE ABOVE IS ' +
+               'CAPPED AT THE REAL LIMIT RATHER THAN EXTENDED PAST IT.', WARN);
+        }
+      } else if (d.scope === 'overall' && tr.overall.length &&
+                 tr.overall.length < 4) {
+        line('A PROJECTION APPEARS ONCE YOU HAVE FOUR SCORED TESTS. THREE POINTS ' +
+             'CAN BE FITTED BY ANY LINE AT ALL, WHICH IS NOT A FORECAST.', BONE_FAINT);
+      }
+      gap(14 * s);
+    }
+
+    /* ---- what you have actually been practising, against what the test is.
+
+       A player who only ever runs MATH INFINITY has a domain breakdown that
+       looks thorough and a preparation that is not. Nothing on this page said
+       so: every other chart here is scaled to what they happened to answer, so
+       a section they have never touched is simply absent rather than visibly
+       missing. This is the one chart whose denominator is the real test. */
+    if (d.scope === 'overall' && d.answered >= 20) {
+      heading('WHAT YOU HAVE BEEN PRACTISING');
+      const REAL = SATG.screens.REAL_DOMAIN_MIX;
+      const mine = {};
+      for (const dm of d.domains) mine[dm.domain] = dm.total;
+      const rows = Object.keys(REAL).map((k) => ({
+        domain: k, real: REAL[k],
+        mine: d.answered ? (mine[k] || 0) / d.answered * 100 : 0
+      })).sort((a, b) => (b.mine - b.real) - (a.mine - a.real));
+
+      for (const r of rows) {
+        blocks.push({ h: F.lineHeight(small) + 8 * s, draw: (ctx, y) => {
+          this.drawMixRow(ctx, y, left, avail, small, r);
+        }});
+      }
+      line('SOLID IS YOUR PRACTICE. THE MARK IS THE SHARE THAT DOMAIN HAS ON THE ' +
+           'REAL TEST.', BONE_FAINT);
+      const worst = rows[rows.length - 1];
+      if (worst && worst.real - worst.mine > 6) {
+        line('YOU ARE UNDER-PRACTISING ' + shortDomain(worst.domain).toUpperCase() +
+             ' BY ' + Math.round(worst.real - worst.mine) + ' POINTS OF SHARE.', WARN);
+      }
       gap(14 * s);
     }
 
@@ -686,6 +925,42 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
     return blocks;
   }
 
+  /* One domain's share of your practice against its share of the real test.
+
+     A bullet chart rather than two bars: the comparison is a single quantity
+     measured against a target, and two bars invite the eye to read them as two
+     independent facts. Both are drawn on the same 0-40% scale so the rows can
+     be compared with each other as well as with their own marks. */
+  drawMixRow(ctx, y, left, avail, scale, r) {
+    const s = this.uiScale || 1;
+    const labelW = Math.round(avail * 0.40);
+    const barX = left + labelW + 8 * s;
+    const barW = Math.round(avail * 0.36);
+    const barH = Math.max(3 * s, Math.round(F.cellH * scale * 0.65));
+    const FULL = 40;                       // no domain is above 35% of the test
+
+    const label = shortDomain(r.domain);
+    const ls = F.fitScale(label, labelW - 4 * s, scale, s, s);
+    F.draw(ctx, fitOrClip(label, labelW - 4 * s, ls, s), left, y,
+           { color: BONE_DIM, scale: ls, tracking: s });
+
+    const by = y + Math.round((F.cellH * scale - barH) / 2);
+    ctx.fillStyle = '#241f1a';
+    ctx.fillRect(barX, by, barW, barH);
+
+    const gapPts = r.mine - r.real;
+    ctx.fillStyle = gapPts < -6 ? BLOOD : Math.abs(gapPts) <= 6 ? GOOD : WARN;
+    ctx.fillRect(barX, by, Math.max(1 * s, Math.round(barW * clamp(r.mine / FULL, 0, 1))), barH);
+
+    // The target mark: a full-height tick the bar is read against.
+    const tx = barX + Math.round(barW * clamp(r.real / FULL, 0, 1));
+    ctx.fillStyle = BONE;
+    ctx.fillRect(tx, by - 3 * s, Math.max(1, Math.round(s)), barH + 6 * s);
+
+    F.draw(ctx, Math.round(r.mine) + '% / ' + r.real + '%', left + avail, y,
+           { color: BONE_DIM, scale: scale, align: 'right', tracking: s });
+  }
+
   drawBar(ctx, y, left, avail, scale, label, pct, tail) {
     const s = this.uiScale || 1;
     const labelW = Math.round(avail * 0.40);
@@ -734,7 +1009,13 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
     const plot = (pts, lo, hi, color, thick, hollowWhenEstimated) => {
       if (!pts.length) return;
       const n = pts.length;
-      const px = (i) => n === 1 ? x0 + w / 2 : x0 + w * (i / (n - 1));
+      /* When a projection is drawn, the plot is wider than the data: the real
+         points have to keep the same x positions the projection was built
+         against, or the dashed line would start somewhere the last score is
+         not. */
+      const slots = this._projSlots || (n - 1);
+      const px = (i) => (n === 1 && !this._projSlots) ? x0 + w / 2
+                      : x0 + w * (slots ? i / slots : 0.5);
       const py = (v) => y1 - ph * norm(v, lo, hi);
 
       ctx.strokeStyle = color;
@@ -760,6 +1041,51 @@ class StatsScreen extends SATG.screens.ScreenCanvas {
     };
 
     const scope = this.data.scope;
+
+    /* The projection is drawn FIRST, under every real series, so that a band
+       showing something that has not happened can never sit on top of a point
+       that did. */
+    const proj = tr.projection;
+    if (scope === 'overall' && proj && tr.overall.length >= 2) {
+      /* The x-axis is one slot per test taken, and the projection sits `ahead`
+         slots past the last one - so the plot has to make room for them, which
+         is why every series below is drawn against `slots` rather than against
+         its own length. */
+      const slots = tr.overall.length - 1 + proj.ahead;
+      const px = (i) => x0 + w * (slots ? i / slots : 0.5);
+      const py = (v) => y1 - ph * clamp((v - 400) / 1200, 0, 1);
+      const lastX = px(tr.overall.length - 1);
+      const lastY = py(tr.overall[tr.overall.length - 1].v);
+      const tipX = px(proj.at);
+
+      // The band: a wedge opening from the last real score to the range ahead.
+      ctx.fillStyle = 'rgba(217,210,196,0.10)';
+      ctx.beginPath();
+      ctx.moveTo(lastX, lastY);
+      ctx.lineTo(tipX, py(proj.hi));
+      ctx.lineTo(tipX, py(proj.lo));
+      ctx.closePath();
+      ctx.fill();
+
+      // The centre line, dashed, so it never reads as measured data.
+      ctx.strokeStyle = BONE_FAINT;
+      ctx.lineWidth = Math.max(1, s);
+      if (ctx.setLineDash) ctx.setLineDash([Math.max(2, 3 * s), Math.max(2, 3 * s)]);
+      ctx.beginPath();
+      ctx.moveTo(lastX, lastY);
+      ctx.lineTo(tipX, py(proj.centre));
+      ctx.stroke();
+      if (ctx.setLineDash) ctx.setLineDash([]);
+
+      F.draw(ctx, String(proj.centre), Math.min(x1, tipX + 4 * s),
+             py(proj.centre) - Math.round(F.cellH * s / 2),
+             { color: BONE_FAINT, scale: s, tracking: 0 });
+
+      this._projSlots = slots;
+    } else {
+      this._projSlots = null;
+    }
+
     if (scope === 'rw' || scope === 'overall') {
       plot(tr.rw, 200, 800, ENGLISH_C, Math.max(1, s), false);
     }

@@ -2,7 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<!-- viewport-fit=cover so the canvas reaches under a notch rather than being
+     letterboxed beside it; the game draws its own margins and never puts a
+     control in the outermost few percent. maximum-scale pins the page so a
+     double-tap cannot zoom the canvas out of alignment with the pointer
+     coordinates every hit test is computed from. -->
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
 <title>THE SAT GAME</title>
 <style>
   html,body{
@@ -18,6 +25,10 @@
     -webkit-font-smoothing:none;
     user-select:none;-webkit-user-select:none;
     touch-action:none;
+    /* Stops the rubber-band bounce past the top and bottom on iOS, which on a
+       full-screen canvas reads as the whole game sliding off its own page. */
+    overscroll-behavior:none;
+    -webkit-tap-highlight-color:transparent;
   }
   #stage{
     position:fixed;inset:0;
@@ -70,6 +81,7 @@
 <script src="src/core/font.js"></script>
 <script src="src/render/pipeline.js"></script>
 <script src="src/audio/audio.js"></script>
+<script src="src/audio/music.js"></script>
 <script src="src/sat/util.js"></script>
 <script src="src/sat/taxonomy.js"></script>
 <script src="src/sat/math-questions.js"></script>
@@ -78,6 +90,7 @@
 <script src="src/sat/exam.js"></script>
 <script src="src/sat/profile.js"></script>
 <script src="src/net/cloud.js"></script>
+<script src="src/ui/touch.js"></script>
 <script src="src/ui/paper.js"></script>
 <script src="src/ui/calculator.js"></script>
 <script src="src/ui/fx.js"></script>

@@ -150,6 +150,7 @@ function qtypePages(perQType) {
         '</p>' + bar(e, 320) +
         (q ? '<dl>' +
           '<dt>What it asks</dt><dd>' + esc(q.asks) + '</dd>' +
+          (q.cue ? '<dt>How to recognise it</dt><dd>' + esc(q.cue) + '</dd>' : '') +
           '<dt>Example</dt><dd class="ex">' + esc(q.example) + '</dd>' +
           '<dt>Usually missed by</dt><dd>' + esc(q.trap) + '</dd></dl>' : '') +
         (links.length ? '<ul class="links">' + links.join('') + '</ul>' : '') +

@@ -242,11 +242,15 @@ class TypePickerScreen extends SATG.screens.ScreenCanvas {
 
       if (isOpen) {
         const asks = F.fitLines(q.asks, avail - 26 * s, small, s, 5, s);
+        const cue = q.cue
+          ? F.fitLines('YOU CAN TELL BECAUSE.  ' + q.cue, avail - 26 * s, small, s, 4, s)
+          : null;
         const ex = F.fitLines('EXAMPLE.  ' + q.example, avail - 26 * s, small, s, 6, s);
         const warn = usable ? null
           : F.fitLines('THIS TYPE IS NOT IN THE QUESTION BANK YET, SO IT CANNOT BE STARTED.',
                        avail - 26 * s, small, s, 3, s);
         const h = F.lineHeight(asks.scale) * asks.lines.length +
+                  (cue ? F.lineHeight(cue.scale) * cue.lines.length + 4 * s : 0) +
                   F.lineHeight(ex.scale) * ex.lines.length +
                   (warn ? F.lineHeight(warn.scale) * warn.lines.length + 6 * s : 0) + 18 * s;
         blocks.push({ h, draw: (ctx, y) => {
@@ -256,6 +260,13 @@ class TypePickerScreen extends SATG.screens.ScreenCanvas {
           for (const ln of asks.lines) {
             F.draw(ctx, ln, left + 14 * s, yy, { color: BONE, scale: asks.scale, tracking: s });
             yy += F.lineHeight(asks.scale);
+          }
+          if (cue) {
+            yy += 4 * s;
+            for (const ln of cue.lines) {
+              F.draw(ctx, ln, left + 14 * s, yy, { color: GOOD, scale: cue.scale, tracking: s });
+              yy += F.lineHeight(cue.scale);
+            }
           }
           yy += 4 * s;
           for (const ln of ex.lines) {
